@@ -128,6 +128,27 @@ decision → size order → risk checks → LIVE gate → broker
 - **US market-hours guard** (holidays not tracked — set `IGNORE_MARKET_HOURS=true` to bypass).
 - Order sizing scales with signal confidence, capped by your limits.
 
+### Test it completely first — live paper-trading (no real money)
+The paper broker runs the **entire pipeline** — real signals, real market prices,
+scheduled cycles, orders, positions, P/L — against a simulated wallet. Nothing
+touches a real account.
+
+Set these (locally or on Railway):
+```
+BROKER=paper
+LIVE_TRADING=true          # "live" paper-trading: actually fills simulated orders
+AUTO_TRADE=true
+PAPER_STARTING_CASH=10000
+IGNORE_MARKET_HOURS=true   # optional: lets you test on nights/weekends
+```
+Then in Discord:
+- **`/runcycle`** — run a full analyze-and-trade cycle immediately (don't wait for the timer)
+- **`/positions`** — see the simulated fills and live P/L
+- **`/trading`** — confirm broker=paper, mode=LIVE, equity/cash
+- **`/history`**, the dashboard chart, and channel alerts show everything updating
+
+When you're happy it behaves, switch `BROKER=robinhood` (still start in dry-run).
+
 ### Recommended rollout
 1. `BROKER=paper`, dry-run → watch the signals and intended orders in alerts.
 2. `BROKER=paper`, `LIVE_TRADING=true` → exercise the full order path on the

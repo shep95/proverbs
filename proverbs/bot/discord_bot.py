@@ -70,6 +70,34 @@ def _account_embed(title: str, data: dict) -> discord.Embed:
     return embed
 
 
+def cycle_summary_embed(report: CycleReport) -> discord.Embed:
+    """Always-on summary of a cycle (used by the manual /runcycle command)."""
+    tag = "LIVE" if trading.state.live else "DRY-RUN"
+    broker_name = trading.broker.name if trading.broker else "?"
+    embed = discord.Embed(
+        title="🔄 Analysis cycle complete",
+        description=(f"avg score **{report.avg_score:+.3f}** · sim return "
+                     f"**{report.simulated_return_pct:+.3f}%** · balance **${report.balance_after:,.2f}**\n"
+                     f"broker **{broker_name}** · mode **{tag}**"),
+        color=discord.Color.blurple(),
+    )
+    for d in report.decisions[:12]:
+        embed.add_field(name=f"{d.emoji} {d.symbol} — {d.action}",
+                        value=f"score {d.combined_score:+.2f} · conf {d.confidence*100:.0f}%",
+                        inline=True)
+    acted = [o for o in report.orders if o.status in ("submitted", "dry_run", "rejected")]
+    if acted:
+        lines = []
+        for o in acted[:10]:
+            extra = f" — {o.message}" if o.status == "rejected" else ""
+            lines.append(f"{o.side.upper()} ${o.notional:,.2f} {o.symbol} · {o.status}{extra}")
+        embed.add_field(name=f"⚙️ Orders [{broker_name} · {tag}]",
+                        value="\n".join(lines)[:1024], inline=False)
+    if report.errors:
+        embed.add_field(name="⚠️ Errors", value="\n".join(report.errors[:5])[:1024], inline=False)
+    return embed
+
+
 def cycle_alert_embed(report: CycleReport) -> Optional[discord.Embed]:
     """Build an alert embed for notable events; None if nothing worth pinging."""
     notable = [d for d in report.decisions if d.action in ("BUY", "REDUCE")]
@@ -202,6 +230,12 @@ def _register_commands(bot: commands.Bot) -> None:
             await interaction.followup.send(f"Couldn't fetch data for `{symbol.upper()}`.")
             return
         await interaction.followup.send(embed=decision_embed(decision))
+
+    @tree.command(name="runcycle", description="Run a full analysis + trade cycle right now (great for testing).")
+    async def runcycle(interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        report = await asyncio.to_thread(engine.run_cycle)
+        await interaction.followup.send(embed=cycle_summary_embed(report))
 
     @tree.command(name="balance", description="Show your paper account balance.")
     async def balance(interaction: discord.Interaction):
@@ -366,7 +400,7 @@ def _register_commands(bot: commands.Bot) -> None:
             description="A three-brain paper-trading signal bot. **Simulation only — not financial advice.**",
             color=discord.Color.blurple())
         embed.add_field(name="Signals",
-                        value="`/signal [ticker]` · `/analyze <ticker>` · `/watchlist`", inline=False)
+                        value="`/signal [ticker]` · `/analyze <ticker>` · `/runcycle` · `/watchlist`", inline=False)
         embed.add_field(name="Account",
                         value="`/balance` · `/deposit <amt>` · `/withdraw <amt>` · "
                               "`/risk <level>` · `/portfolio` · `/history`", inline=False)
