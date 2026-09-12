@@ -1,0 +1,35 @@
+# --- Core runtime ---
+discord.py==2.4.0
+Flask==3.0.3
+flask-cors==4.0.1
+SQLAlchemy==2.0.35
+APScheduler==3.10.4
+python-dotenv==1.0.1
+
+# --- Market & news data ---
+yfinance==0.2.44
+pandas==2.2.3
+numpy==1.26.4
+requests==2.32.3
+feedparser==6.0.11
+beautifulsoup4==4.12.3
+lxml==5.3.0
+
+# --- Fiscal AI model / stats ---
+scikit-learn==1.5.2
+scipy==1.13.1
+
+# --- Cultural AI sentiment (lightweight default) ---
+vaderSentiment==3.3.2
+
+# --- Production WSGI server for the dashboard (pure-python; runs in a thread) ---
+waitress==3.0.0
+
+# --- Optional heavy backends (NOT installed by default; see README) ---
+# Uncomment to enable the Hugging Face sentiment backend (CULTURAL_BACKEND=transformers).
+# This pulls in torch (~2GB) and may exceed Railway build limits / slow cold starts.
+# transformers==4.44.2
+# torch==2.4.1
+#
+# Optional NewsAPI client (NEWS_BACKEND=newsapi). RSS is the keyless default.
+# newsapi-python==0.2.7

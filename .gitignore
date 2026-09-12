@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime databases / local data
+*.db
+*.sqlite
+*.sqlite3
+/var/
+/instance/
+
+# Caches / artifacts
+.cache/
+*.log
+models_cache/
+.DS_Store

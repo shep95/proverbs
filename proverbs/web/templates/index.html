@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>proverbs — investment dashboard</title>
+  <style>
+    :root {
+      --bg: #0e1116; --panel: #171b22; --panel2: #1e232c; --text: #e6e9ef;
+      --muted: #8b93a1; --accent: #6c8cff; --green: #35c88a; --red: #ff5d5d;
+      --gold: #ffcc4d; --border: #262c37;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+           background: var(--bg); color: var(--text); }
+    header { padding: 20px 24px; border-bottom: 1px solid var(--border);
+             display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    header h1 { margin: 0; font-size: 20px; letter-spacing: .5px; }
+    header .sub { color: var(--muted); font-size: 13px; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; display: grid;
+            grid-template-columns: 1fr 1fr; gap: 18px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+    .card h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+    .span2 { grid-column: 1 / -1; }
+    .balance { font-size: 34px; font-weight: 700; }
+    .row { display: flex; gap: 18px; flex-wrap: wrap; }
+    .stat { flex: 1; min-width: 120px; }
+    .stat .label { color: var(--muted); font-size: 12px; }
+    .stat .value { font-size: 18px; font-weight: 600; margin-top: 2px; }
+    input, select, button { font: inherit; }
+    input, select { background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+                    border-radius: 8px; padding: 9px 11px; width: 100%; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+    button { background: var(--accent); color: #fff; border: none; border-radius: 8px;
+             padding: 10px 14px; cursor: pointer; font-weight: 600; margin-top: 10px; }
+    button.secondary { background: var(--panel2); border: 1px solid var(--border); }
+    button:hover { filter: brightness(1.08); }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; }
+    .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+    .BUY { background: rgba(53,200,138,.15); color: var(--green); }
+    .HOLD { background: rgba(255,204,77,.15); color: var(--gold); }
+    .REDUCE { background: rgba(255,93,93,.15); color: var(--red); }
+    .gauge-wrap { text-align: center; }
+    .gauge-val { font-size: 26px; font-weight: 700; margin-top: 6px; }
+    .disclaimer { color: var(--muted); font-size: 12px; text-align: center; padding: 8px 24px 28px; }
+    .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+             background: var(--panel2); border: 1px solid var(--border); color: var(--text);
+             padding: 10px 16px; border-radius: 8px; opacity: 0; transition: opacity .3s; }
+    .toast.show { opacity: 1; }
+    canvas { max-width: 100%; }
+    @media (max-width: 760px) { .wrap { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>📜 proverbs</h1>
+      <div class="sub">three-brain paper-trading dashboard · cultural → fiscal → orchestrator</div>
+    </div>
+    <div class="sub">watchlist: {{ watchlist | join(', ') }}</div>
+  </header>
+
+  <div class="wrap">
+    <!-- Account -->
+    <div class="card">
+      <h2>Account (shared / global)</h2>
+      <div class="balance" id="balance">$0.00</div>
+      <div class="row" style="margin-top:14px">
+        <div class="stat"><div class="label">Net profit</div><div class="value" id="profit">$0.00</div></div>
+        <div class="stat"><div class="label">Deposited</div><div class="value" id="deposited">$0.00</div></div>
+        <div class="stat"><div class="label">Withdrawn</div><div class="value" id="withdrawn">$0.00</div></div>
+        <div class="stat"><div class="label">Risk</div><div class="value" id="riskLabel">Medium</div></div>
+      </div>
+    </div>
+
+    <!-- Sentiment gauge -->
+    <div class="card gauge-wrap">
+      <h2>Cultural sentiment index</h2>
+      <canvas id="gauge" height="150"></canvas>
+      <div class="gauge-val" id="gaugeVal">0.00</div>
+      <div class="sub" id="gaugeLabel">Neutral</div>
+    </div>
+
+    <!-- Controls -->
+    <div class="card">
+      <h2>Manage</h2>
+      <div class="grid2">
+        <div>
+          <label for="depositAmount">Deposit ($)</label>
+          <input type="number" id="depositAmount" min="1" placeholder="1000" />
+          <button onclick="doDeposit()">Deposit</button>
+        </div>
+        <div>
+          <label for="withdrawAmount">Withdraw ($)</label>
+          <input type="number" id="withdrawAmount" min="1" placeholder="250" />
+          <button class="secondary" onclick="doWithdraw()">Withdraw</button>
+        </div>
+      </div>
+      <label for="riskSelect">Risk level</label>
+      <select id="riskSelect" onchange="setRisk()">
+        <option>Low</option><option selected>Medium</option><option>High</option>
+      </select>
+      <button onclick="runCycle()" style="width:100%">Run analysis cycle now</button>
+    </div>
+
+    <!-- Balance chart -->
+    <div class="card">
+      <h2>Balance history</h2>
+      <canvas id="balanceChart" height="180"></canvas>
+    </div>
+
+    <!-- Signals -->
+    <div class="card span2">
+      <h2>Latest signals</h2>
+      <table>
+        <thead><tr><th>Symbol</th><th>Action</th><th>Combined</th><th>Confidence</th>
+          <th>Price</th><th>Sharpe</th><th>95% VaR</th></tr></thead>
+        <tbody id="signalsBody"><tr><td colspan="7" class="sub">Loading…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- History -->
+    <div class="card span2">
+      <h2>Transaction history</h2>
+      <table>
+        <thead><tr><th>Time</th><th>Type</th><th>Amount</th><th>Balance after</th></tr></thead>
+        <tbody id="historyBody"><tr><td colspan="4" class="sub">No transactions yet.</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="disclaimer">
+    ⚠️ proverbs is an educational <b>paper-trading simulation</b>. Signals are informational and
+    <b>not financial advice</b>. No real orders are placed.
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fmt = (n) => "$" + Number(n || 0).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const balanceSeries = [];
+
+    function toast(msg) {
+      const t = $("toast"); t.textContent = msg; t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 2200);
+    }
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      return res.json();
+    }
+
+    // ---- Balance chart ----
+    const balanceChart = new Chart($("balanceChart"), {
+      type: "line",
+      data: { labels: [], datasets: [{ label: "Balance", data: [], borderColor: "#6c8cff",
+        backgroundColor: "rgba(108,140,255,.15)", fill: true, tension: .3, pointRadius: 0 }] },
+      options: { plugins: { legend: { display: false } },
+        scales: { x: { ticks: { color: "#8b93a1" }, grid: { color: "#262c37" } },
+                  y: { ticks: { color: "#8b93a1" }, grid: { color: "#262c37" } } } }
+    });
+
+    // ---- Sentiment gauge (semi-doughnut) ----
+    const gauge = new Chart($("gauge"), {
+      type: "doughnut",
+      data: { labels: ["neg", "pos"], datasets: [{ data: [50, 50],
+        backgroundColor: ["#ff5d5d", "#35c88a"], borderWidth: 0, circumference: 180, rotation: 270 }] },
+      options: { cutout: "72%", plugins: { legend: { display: false }, tooltip: { enabled: false } } }
+    });
+
+    function setGauge(idx) {
+      const pct = ((idx + 1) / 2) * 100; // -1..1 -> 0..100
+      gauge.data.datasets[0].data = [100 - pct, pct];
+      gauge.update();
+      $("gaugeVal").textContent = idx.toFixed(2);
+      $("gaugeLabel").textContent = idx > 0.15 ? "Bullish" : idx < -0.15 ? "Bearish" : "Neutral";
+      $("gaugeVal").style.color = idx > 0.15 ? "#35c88a" : idx < -0.15 ? "#ff5d5d" : "#ffcc4d";
+    }
+
+    async function refreshAccount() {
+      const a = await api("/api/balance");
+      $("balance").textContent = fmt(a.balance);
+      $("profit").textContent = fmt(a.profit);
+      $("deposited").textContent = fmt(a.total_deposited);
+      $("withdrawn").textContent = fmt(a.total_withdrawn);
+      $("riskLabel").textContent = a.risk_level;
+      const now = new Date().toLocaleTimeString();
+      balanceSeries.push({ t: now, v: a.balance });
+      while (balanceSeries.length > 30) balanceSeries.shift();
+      balanceChart.data.labels = balanceSeries.map(p => p.t);
+      balanceChart.data.datasets[0].data = balanceSeries.map(p => p.v);
+      balanceChart.update();
+    }
+
+    async function refreshSignals() {
+      const signals = await api("/api/signal");
+      const body = $("signalsBody");
+      if (!signals.length) { body.innerHTML = '<tr><td colspan="7" class="sub">No signals yet — run a cycle.</td></tr>'; return; }
+      let avgCultural = 0;
+      body.innerHTML = signals.map(s => {
+        avgCultural += s.cultural_score;
+        return `<tr><td><b>${s.symbol}</b></td>
+          <td><span class="badge ${s.action}">${s.action}</span></td>
+          <td>${s.combined_score >= 0 ? "+" : ""}${s.combined_score.toFixed(2)}</td>
+          <td>${(s.confidence * 100).toFixed(0)}%</td>
+          <td>${fmt(s.last_price)}</td>
+          <td>${s.sharpe_ratio.toFixed(2)}</td>
+          <td>${(s.var_95 * 100).toFixed(2)}%</td></tr>`;
+      }).join("");
+      setGauge(signals.length ? avgCultural / signals.length : 0);
+    }
+
+    async function refreshHistory() {
+      const txns = await api("/api/history");
+      const body = $("historyBody");
+      if (!txns.length) { body.innerHTML = '<tr><td colspan="4" class="sub">No transactions yet.</td></tr>'; return; }
+      body.innerHTML = txns.map(t => `<tr>
+        <td>${t.timestamp.slice(0,19).replace("T"," ")}</td>
+        <td>${t.kind}</td><td>${fmt(t.amount)}</td><td>${fmt(t.balance_after)}</td></tr>`).join("");
+    }
+
+    async function refreshAll() {
+      try { await Promise.all([refreshAccount(), refreshSignals(), refreshHistory()]); }
+      catch (e) { console.error(e); }
+    }
+
+    async function doDeposit() {
+      const amount = parseFloat($("depositAmount").value);
+      if (!(amount > 0)) return toast("Enter a valid amount");
+      const r = await api("/api/deposit", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({amount}) });
+      toast(r.status === "success" ? "Deposited " + fmt(amount) : (r.message || "Error"));
+      $("depositAmount").value = ""; refreshAll();
+    }
+    async function doWithdraw() {
+      const amount = parseFloat($("withdrawAmount").value);
+      if (!(amount > 0)) return toast("Enter a valid amount");
+      const r = await api("/api/withdraw", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({amount}) });
+      toast(r.status === "success" ? "Withdrew " + fmt(amount) : (r.message || "Error"));
+      $("withdrawAmount").value = ""; refreshAll();
+    }
+    async function setRisk() {
+      const risk_level = $("riskSelect").value;
+      const r = await api("/api/risk", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({risk_level}) });
+      toast(r.status === "success" ? "Risk set to " + risk_level : (r.message || "Error"));
+      refreshAll();
+    }
+    async function runCycle() {
+      toast("Running analysis cycle…");
+      const r = await api("/api/cycle", { method: "POST" });
+      toast("Cycle done · avg score " + (r.avg_score >= 0 ? "+" : "") + r.avg_score);
+      refreshAll();
+    }
+
+    refreshAll();
+    setInterval(refreshAll, 30000); // poll every 30s
+  </script>
+</body>
+</html>
