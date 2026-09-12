@@ -45,6 +45,17 @@ class PaperBroker(Broker):
         logger.info("PaperBroker connected (starting cash $%.2f).", settings.paper_starting_cash)
         return True
 
+    def reset(self, cash: float) -> None:
+        """Wipe positions and set cash to ``cash`` (used when starting a session)."""
+        with db.session_scope() as s:
+            acc = db.get_or_create_account(s, PAPER_ACCOUNT, "Paper Broker")
+            for p in list(acc.positions):
+                s.delete(p)
+            acc.balance = cash
+            acc.total_deposited = cash
+            acc.total_withdrawn = 0.0
+        logger.info("PaperBroker reset to $%.2f cash, positions cleared.", cash)
+
     def get_price(self, symbol: str) -> Optional[float]:
         snap = latest_snapshot(symbol)
         return snap.last_price if snap else None

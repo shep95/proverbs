@@ -68,7 +68,9 @@ class RiskManager:
         if confidence < settings.order_confidence_min:
             return False, (f"confidence {confidence:.2f} below ORDER_CONFIDENCE_MIN "
                            f"{settings.order_confidence_min:.2f}.")
-        if not is_market_open():
+        # Market-hours guard applies to REAL brokers only. The paper broker trades
+        # on last-close prices any time, so paper sessions/tests aren't dead off-hours.
+        if getattr(broker, "name", "") != "paper" and not is_market_open():
             return False, "US market is closed."
 
         # Daily loss guard.

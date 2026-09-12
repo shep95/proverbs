@@ -52,6 +52,11 @@ def main() -> None:
     logger.info("Broker=%s · mode=%s · auto_trade=%s",
                 settings.broker, "LIVE" if trading.state.live else "DRY-RUN", settings.auto_trade)
 
+    # If a paper-trading session was running before a restart, resume it.
+    from proverbs.trading.session import sessions
+
+    sessions.resume_active()
+
     if settings.enable_web:
         _start_web_thread()
 

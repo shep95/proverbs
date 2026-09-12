@@ -141,3 +141,38 @@ class Transaction(Base):
             "balance_after": round(self.balance_after, 2),
             "note": self.note,
         }
+
+
+class PaperSession(Base):
+    """A time-boxed live paper-trading run, tracked for a shareholder report."""
+    __tablename__ = "paper_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="running", index=True)  # running|completed|stopped
+    label: Mapped[str] = mapped_column(String(128), default="")
+    created_by: Mapped[str] = mapped_column(String(64), default="")
+    starting_capital: Mapped[float] = mapped_column(Float, default=0.0)
+    start_ts: Mapped[float] = mapped_column(Float, default=0.0)          # epoch seconds
+    planned_end_ts: Mapped[float] = mapped_column(Float, default=0.0)    # epoch seconds
+    ended_ts: Mapped[float] = mapped_column(Float, default=0.0)          # 0 while running
+    final_equity: Mapped[float] = mapped_column(Float, default=0.0)
+    cycles: Mapped[int] = mapped_column(Integer, default=0)
+
+    snapshots: Mapped[list["EquitySnapshot"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", order_by="EquitySnapshot.ts")
+
+
+class EquitySnapshot(Base):
+    """A point on a session's equity curve (recorded each cycle)."""
+    __tablename__ = "equity_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("paper_sessions.id"), index=True)
+    ts: Mapped[float] = mapped_column(Float, default=0.0)  # epoch seconds
+    equity: Mapped[float] = mapped_column(Float, default=0.0)
+    cash: Mapped[float] = mapped_column(Float, default=0.0)
+
+    session: Mapped["PaperSession"] = relationship(back_populates="snapshots")
+
+    def to_dict(self) -> dict:
+        return {"ts": self.ts, "equity": round(self.equity, 2), "cash": round(self.cash, 2)}

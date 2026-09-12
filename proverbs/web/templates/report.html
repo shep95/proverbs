@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>proverbs — investor report</title>
+  <style>
+    :root {
+      --bg:#0e1116; --panel:#171b22; --panel2:#1e232c; --text:#e6e9ef; --muted:#8b93a1;
+      --accent:#6c8cff; --green:#35c88a; --red:#ff5d5d; --gold:#ffcc4d; --border:#262c37;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+           background:var(--bg); color:var(--text); }
+    .wrap { max-width:1000px; margin:0 auto; padding:28px 20px 40px; }
+    header { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:10px; }
+    h1 { margin:0; font-size:22px; letter-spacing:.5px; }
+    .status { font-size:12px; padding:3px 12px; border-radius:999px; text-transform:uppercase;
+              letter-spacing:.6px; font-weight:700; }
+    .running { background:rgba(53,200,138,.15); color:var(--green); }
+    .completed { background:rgba(108,140,255,.15); color:var(--accent); }
+    .stopped { background:rgba(255,93,93,.15); color:var(--red); }
+    .hero { margin:26px 0 8px; }
+    .hero .ret { font-size:52px; font-weight:800; line-height:1; }
+    .hero .sub { color:var(--muted); margin-top:8px; font-size:15px; }
+    .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:14px; margin:24px 0; }
+    .tile { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:16px; }
+    .tile .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+    .tile .value { font-size:22px; font-weight:700; margin-top:6px; }
+    .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px; margin:16px 0; }
+    .card h2 { margin:0 0 14px; font-size:13px; text-transform:uppercase; letter-spacing:.8px; color:var(--muted); }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--border); }
+    th { color:var(--muted); font-weight:500; }
+    .pos { color:var(--green); } .neg { color:var(--red); }
+    .meta { color:var(--muted); font-size:13px; display:flex; gap:20px; flex-wrap:wrap; }
+    .bar { height:6px; background:var(--panel2); border-radius:999px; overflow:hidden; margin-top:10px; }
+    .bar > div { height:100%; background:var(--accent); }
+    .disclaimer { color:var(--muted); font-size:12px; text-align:center; margin-top:26px; }
+    canvas { max-width:100%; }
+    @media (max-width:600px){ .hero .ret{ font-size:40px; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>📜 proverbs — investor report</h1>
+        <div class="meta" id="meta" style="margin-top:8px"></div>
+      </div>
+      <span class="status" id="status">—</span>
+    </header>
+
+    <div class="hero">
+      <div class="ret" id="return">—</div>
+      <div class="sub" id="equityLine">—</div>
+      <div class="bar"><div id="progressBar" style="width:0%"></div></div>
+    </div>
+
+    <div class="tiles" id="tiles"></div>
+
+    <div class="card">
+      <h2>Equity curve</h2>
+      <canvas id="equityChart" height="200"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Open positions</h2>
+      <table>
+        <thead><tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Price</th><th>Value</th><th>Unrealized P/L</th></tr></thead>
+        <tbody id="positions"><tr><td colspan="6" style="color:var(--muted)">—</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="disclaimer" id="disclaimer">
+      Live paper-trading simulation — no real money is invested. Past simulated performance is not
+      indicative of future results and is not financial advice.
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const money = (n) => "$" + Number(n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const cls = (n) => n >= 0 ? "pos" : "neg";
+
+    let chart = new Chart($("equityChart"), {
+      type:"line",
+      data:{ labels:[], datasets:[{ label:"Equity", data:[], borderColor:"#6c8cff",
+        backgroundColor:"rgba(108,140,255,.15)", fill:true, tension:.25, pointRadius:0 }] },
+      options:{ plugins:{ legend:{ display:false } },
+        scales:{ x:{ ticks:{ color:"#8b93a1", maxTicksLimit:8 }, grid:{ color:"#262c37" } },
+                 y:{ ticks:{ color:"#8b93a1" }, grid:{ color:"#262c37" } } } }
+    });
+
+    function tile(label, value, color) {
+      return `<div class="tile"><div class="label">${label}</div>
+              <div class="value" ${color?`style="color:${color}"`:""}>${value}</div></div>`;
+    }
+
+    async function load() {
+      let r;
+      try { r = await (await fetch("/api/report")).json(); } catch(e){ return; }
+      if (r.status === "empty") {
+        $("return").textContent = "No session yet";
+        $("equityLine").textContent = "Start one in Discord with /papertrade start <amount> <duration>.";
+        return;
+      }
+      const s = r.session, p = r.performance, t = r.trades;
+      $("status").textContent = s.status;
+      $("status").className = "status " + s.status;
+
+      const up = p.return_pct >= 0;
+      $("return").textContent = (up?"+":"") + p.return_pct.toFixed(2) + "%";
+      $("return").style.color = up ? "var(--green)" : "var(--red)";
+      $("equityLine").textContent = `${money(p.starting_capital)} → ${money(p.current_equity)}  ·  P/L ${money(p.pnl)}`;
+      $("progressBar").style.width = Math.min(100, s.progress_pct||0) + "%";
+
+      $("meta").innerHTML =
+        `<span>Session #${s.id}</span>` +
+        `<span>Started ${new Date(s.start_iso).toLocaleString()}</span>` +
+        (s.status==="running" ? `<span>${s.remaining_human} remaining</span>`
+                              : `<span>Ran ${s.elapsed_human}</span>`) +
+        `<span>${s.cycles} cycles</span>`;
+
+      $("tiles").innerHTML =
+        tile("Starting capital", money(p.starting_capital)) +
+        tile("Current equity", money(p.current_equity)) +
+        tile("Net P/L", money(p.pnl), up?"var(--green)":"var(--red)") +
+        tile("Return", (up?"+":"")+p.return_pct.toFixed(2)+"%", up?"var(--green)":"var(--red)") +
+        tile("Max drawdown", p.max_drawdown_pct.toFixed(2)+"%", "var(--red)") +
+        tile("Sharpe (per cycle)", p.sharpe_per_cycle.toFixed(2)) +
+        tile("Trades", `${t.count} (${t.buys}B/${t.sells}S)`) +
+        tile("Cash / invested", money(p.cash)+" / "+money(p.invested));
+
+      const curve = r.equity_curve || [];
+      chart.data.labels = curve.map(pt => new Date(pt.ts*1000).toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}));
+      chart.data.datasets[0].data = curve.map(pt => pt.equity);
+      chart.update();
+
+      const pos = r.positions || [];
+      $("positions").innerHTML = pos.length ? pos.map(x => `<tr>
+        <td><b>${x.symbol}</b></td><td>${x.quantity}</td><td>${money(x.avg_cost)}</td>
+        <td>${money(x.current_price)}</td><td>${money(x.market_value)}</td>
+        <td class="${cls(x.unrealized_pl)}">${money(x.unrealized_pl)}</td></tr>`).join("")
+        : '<tr><td colspan="6" style="color:var(--muted)">No open positions.</td></tr>';
+    }
+
+    load();
+    setInterval(load, 30000);
+  </script>
+</body>
+</html>

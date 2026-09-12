@@ -36,6 +36,7 @@ from proverbs.persistence import db
 from proverbs.persistence.models import Account
 from proverbs.trading.base import OrderResult
 from proverbs.trading.manager import trading
+from proverbs.trading.session import sessions
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,8 @@ class Engine:
                     with db.session_scope() as s:
                         db.save_signal(s, decision)
                     # Route the decision to the broker (dry-run/paper by default).
-                    if settings.auto_trade:
+                    # Always trade during an active paper session, even if AUTO_TRADE is off.
+                    if settings.auto_trade or sessions.active():
                         try:
                             order = trading.execute_decision(decision)
                             if order is not None:
@@ -100,6 +102,11 @@ class Engine:
 
             report.avg_score = round(sum(scores) / len(scores), 4) if scores else 0.0
             self._apply_simulation(report)
+            # Snapshot the paper session's equity curve and auto-expire if due.
+            try:
+                sessions.on_cycle()
+            except Exception:
+                logger.exception("Engine: session snapshot failed")
             logger.info("Engine cycle complete: %d signals, avg=%.3f, return=%.3f%%",
                         len(report.decisions), report.avg_score, report.simulated_return_pct)
             return report

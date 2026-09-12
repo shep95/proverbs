@@ -10,7 +10,10 @@ via ``asyncio.to_thread`` to keep the Discord event loop responsive.
 from __future__ import annotations
 
 import asyncio
+import io
+import json
 import logging
+import os
 from typing import Optional
 
 import discord
@@ -21,6 +24,7 @@ from proverbs.brains.orchestrator import Decision
 from proverbs.config import settings
 from proverbs.services.engine import CycleReport, engine
 from proverbs.trading.manager import trading
+from proverbs.trading.session import sessions
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +99,54 @@ def cycle_summary_embed(report: CycleReport) -> discord.Embed:
                         value="\n".join(lines)[:1024], inline=False)
     if report.errors:
         embed.add_field(name="⚠️ Errors", value="\n".join(report.errors[:5])[:1024], inline=False)
+    return embed
+
+
+def _report_url() -> Optional[str]:
+    """Public URL to the shareable web report, if the host domain is known."""
+    domain = os.getenv("RAILWAY_PUBLIC_DOMAIN") or os.getenv("PUBLIC_URL")
+    if not domain:
+        return None
+    if domain.startswith("http"):
+        return domain.rstrip("/") + "/report"
+    return f"https://{domain}/report"
+
+
+def session_report_embed(report: dict) -> discord.Embed:
+    """Shareholder-facing performance summary of a paper-trading session."""
+    sess = report["session"]
+    perf = report["performance"]
+    up = perf["return_pct"] >= 0
+    color = discord.Color.green() if up else discord.Color.red()
+    arrow = "📈" if up else "📉"
+    embed = discord.Embed(
+        title=f"{arrow} Paper-trading report — session #{sess['id']} ({sess['status']})",
+        description=(f"**${perf['starting_capital']:,.2f}** → **${perf['current_equity']:,.2f}**  "
+                     f"({perf['return_pct']:+.2f}%)"),
+        color=color,
+    )
+    embed.add_field(name="Net P/L", value=f"${perf['pnl']:,.2f}", inline=True)
+    embed.add_field(name="Return", value=f"{perf['return_pct']:+.2f}%", inline=True)
+    embed.add_field(name="Max drawdown", value=f"{perf['max_drawdown_pct']:.2f}%", inline=True)
+    embed.add_field(name="Peak equity", value=f"${perf['peak_equity']:,.2f}", inline=True)
+    embed.add_field(name="Sharpe (per cycle)", value=f"{perf['sharpe_per_cycle']:.2f}", inline=True)
+    embed.add_field(name="Trades", value=f"{report['trades']['count']} "
+                    f"({report['trades']['buys']}B/{report['trades']['sells']}S)", inline=True)
+    embed.add_field(name="Cash / invested",
+                    value=f"${perf['cash']:,.2f} / ${perf['invested']:,.2f}", inline=True)
+    embed.add_field(name="Cycles", value=str(sess["cycles"]), inline=True)
+    if sess["status"] == "running":
+        embed.add_field(name="Progress",
+                        value=f"{sess['progress_pct']:.0f}% · {sess['remaining_human']} left", inline=True)
+    else:
+        embed.add_field(name="Ran for", value=sess["elapsed_human"], inline=True)
+
+    positions = report.get("positions", [])
+    if positions:
+        lines = [f"{p['symbol']}: ${p['market_value']:,.2f} (P/L ${p['unrealized_pl']:,.2f})"
+                 for p in positions[:8]]
+        embed.add_field(name="Open positions", value="\n".join(lines), inline=False)
+    embed.set_footer(text="proverbs · live paper-trading (no real money) · not financial advice")
     return embed
 
 
@@ -393,6 +445,76 @@ def _register_commands(bot: commands.Bot) -> None:
             trading.set_live(False)
             await interaction.response.send_message("🧪 **Dry-run mode.** Orders are logged but not sent.")
 
+    # ------------------------------------------------------- /papertrade group
+    papertrade = app_commands.Group(
+        name="papertrade", description="Run a live paper-trading session and report to investors.")
+
+    @papertrade.command(name="start", description="Start a live paper-trading session (no real money).")
+    @app_commands.describe(amount="Starting capital in USD, e.g. 10000",
+                           duration="How long to run, e.g. 7d, 24h, 90m")
+    async def pt_start(interaction: discord.Interaction, amount: float, duration: str,
+                       label: Optional[str] = None):
+        await interaction.response.defer(thinking=True)
+        res = await asyncio.to_thread(sessions.start, amount, duration,
+                                      str(interaction.user.id), label or "")
+        if res["status"] != "success":
+            await interaction.followup.send(f"⚠️ {res['message']}")
+            return
+        report = await asyncio.to_thread(engine.run_cycle)  # kick off immediately
+        embed = discord.Embed(
+            title=f"🟢 Paper-trading session #{res['session_id']} started",
+            description=(f"Starting capital **${res['starting_capital']:,.2f}** · "
+                         f"running for **{res['duration']}**\n"
+                         f"Live paper-trading is ON — real prices, simulated wallet."),
+            color=discord.Color.green())
+        embed.add_field(name="First cycle",
+                        value=f"{len([o for o in report.orders if o.status=='submitted'])} orders placed",
+                        inline=True)
+        url = _report_url()
+        if url:
+            embed.add_field(name="Live report", value=f"[open shareholder report]({url})", inline=False)
+        embed.set_footer(text="Track with /papertrade status · finish early with /papertrade stop")
+        await interaction.followup.send(embed=embed)
+
+    @papertrade.command(name="status", description="Show the current session's live performance.")
+    async def pt_status(interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        report = await asyncio.to_thread(sessions.report)
+        if report is None:
+            await interaction.followup.send("No paper-trading session yet. Start one with `/papertrade start`.")
+            return
+        await interaction.followup.send(embed=session_report_embed(report))
+
+    @papertrade.command(name="stop", description="Stop the running session now.")
+    async def pt_stop(interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        res = await asyncio.to_thread(sessions.stop, "stopped", "stopped via command")
+        if res["status"] != "success":
+            await interaction.followup.send("No running session to stop.")
+            return
+        report = await asyncio.to_thread(sessions.report)
+        embed = session_report_embed(report) if report else discord.Embed(title="Session stopped")
+        embed.title = "🛑 " + embed.title
+        await interaction.followup.send(embed=embed)
+
+    @papertrade.command(name="report", description="Full investor report + downloadable data.")
+    async def pt_report(interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        report = await asyncio.to_thread(sessions.report)
+        if report is None:
+            await interaction.followup.send("No paper-trading session yet. Start one with `/papertrade start`.")
+            return
+        embed = session_report_embed(report)
+        url = _report_url()
+        if url:
+            embed.add_field(name="Shareable web report", value=f"[open live report]({url})", inline=False)
+        data = json.dumps(report, indent=2).encode()
+        fname = f"proverbs_session_{report['session']['id']}_report.json"
+        file = discord.File(io.BytesIO(data), filename=fname)
+        await interaction.followup.send(embed=embed, file=file)
+
+    tree.add_command(papertrade)
+
     @tree.command(name="help", description="What proverbs can do.")
     async def help_cmd(interaction: discord.Interaction):
         embed = discord.Embed(
@@ -407,6 +529,9 @@ def _register_commands(bot: commands.Bot) -> None:
         embed.add_field(name="Trading",
                         value="`/trading` · `/positions` · `/order <buy|sell> <ticker> <amt>` · "
                               "`/mode <dry-run|live>` · `/kill` · `/resume`", inline=False)
+        embed.add_field(name="Paper-trading sessions (investor reports)",
+                        value="`/papertrade start <amount> <duration>` · `/papertrade status` · "
+                              "`/papertrade stop` · `/papertrade report`", inline=False)
         embed.set_footer(text="Trading defaults to DRY-RUN. Alerts post to the configured channel.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

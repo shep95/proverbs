@@ -36,6 +36,18 @@ def create_app() -> Flask:
     def healthz():
         return jsonify({"status": "ok", "service": "proverbs"})
 
+    @app.route("/report")
+    def report_page():
+        return render_template("report.html")
+
+    @app.route("/api/report")
+    def api_report():
+        from proverbs.trading.session import sessions
+        report = sessions.report()
+        if report is None:
+            return jsonify({"status": "empty", "message": "No paper-trading session yet."})
+        return jsonify(report)
+
     @app.route("/api/signal")
     def api_signal():
         symbol = request.args.get("symbol")

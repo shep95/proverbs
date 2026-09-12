@@ -131,21 +131,32 @@ decision → size order → risk checks → LIVE gate → broker
 ### Test it completely first — live paper-trading (no real money)
 The paper broker runs the **entire pipeline** — real signals, real market prices,
 scheduled cycles, orders, positions, P/L — against a simulated wallet. Nothing
-touches a real account.
+touches a real account. (Paper trades any time, including nights/weekends, using
+the last close; the market-hours guard only applies to real brokers.)
 
-Set these (locally or on Railway):
+**The easiest way: a `/papertrade` session.** In Discord:
 ```
-BROKER=paper
-LIVE_TRADING=true          # "live" paper-trading: actually fills simulated orders
-AUTO_TRADE=true
-PAPER_STARTING_CASH=10000
-IGNORE_MARKET_HOURS=true   # optional: lets you test on nights/weekends
+/papertrade start amount:10000 duration:7d      # start a tracked run
+/papertrade status                              # live performance any time
+/papertrade report                              # full report + downloadable JSON
+/papertrade stop                                # end early
 ```
-Then in Discord:
-- **`/runcycle`** — run a full analyze-and-trade cycle immediately (don't wait for the timer)
-- **`/positions`** — see the simulated fills and live P/L
-- **`/trading`** — confirm broker=paper, mode=LIVE, equity/cash
-- **`/history`**, the dashboard chart, and channel alerts show everything updating
+A session resets a fresh $10k (your `amount`) paper wallet, turns on live
+paper-trading, trades every cycle for the `duration` (e.g. `90m`, `24h`, `7d`),
+snapshots the equity curve, and auto-stops when time's up. It survives Railway
+restarts (it resumes automatically).
+
+**Shareholder report.** Every session produces an investor-ready report:
+starting capital → current equity, return %, net P/L, max drawdown, Sharpe,
+trade count, open positions, and an equity-curve chart. Share it two ways:
+- **Live web page:** `https://<your-railway-domain>/report` (auto-refreshes) — send
+  this link to investors.
+- **In Discord:** `/papertrade report` posts the summary and attaches the full
+  `*_report.json` data file.
+
+Prefer manual control instead of a timed session? Set `BROKER=paper`,
+`LIVE_TRADING=true`, `AUTO_TRADE=true` and use **`/runcycle`** to trade on demand,
+watching `/positions`, `/trading`, `/history` and the dashboard.
 
 When you're happy it behaves, switch `BROKER=robinhood` (still start in dry-run).
 
@@ -234,7 +245,8 @@ for the full annotated list. Highlights:
 
 `GET /healthz` · `GET /api/signal[?symbol=]` · `GET /api/balance` ·
 `GET /api/portfolio` · `GET /api/history` · `GET /api/trading` ·
-`GET /api/positions` · `POST /api/deposit` · `POST /api/withdraw` ·
+`GET /api/positions` · `GET /report` (investor report page) ·
+`GET /api/report` · `POST /api/deposit` · `POST /api/withdraw` ·
 `POST /api/risk` · `POST /api/cycle`
 
 ---
