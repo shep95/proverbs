@@ -113,6 +113,8 @@ class Settings:
     daily_loss_limit: float = field(default_factory=lambda: _env_float("DAILY_LOSS_LIMIT", 0.0))  # 0 = off
     order_confidence_min: float = field(default_factory=lambda: _env_float("ORDER_CONFIDENCE_MIN", 0.15))
     paper_starting_cash: float = field(default_factory=lambda: _env_float("PAPER_STARTING_CASH", 10000.0))
+    # A signal is graded once a price at least this many hours later is available.
+    accuracy_horizon_hours: float = field(default_factory=lambda: _env_float("ACCURACY_HORIZON_HOURS", 24.0))
 
     # Robinhood credentials (only needed when BROKER=robinhood). Never hardcode.
     robinhood_username: str = field(default_factory=lambda: os.getenv("ROBINHOOD_USERNAME", ""))

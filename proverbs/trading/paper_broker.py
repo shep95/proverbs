@@ -9,6 +9,7 @@ Uses a dedicated account row (``broker_paper``) and the existing Position table.
 from __future__ import annotations
 
 import logging
+import time
 from typing import List, Optional
 
 from proverbs.config import settings
@@ -99,24 +100,30 @@ class PaperBroker(Broker):
                 acc.balance -= notional
                 if pos is None:
                     pos = Position(account_id=acc.id, symbol=symbol, quantity=qty,
-                                   avg_cost=price, current_price=price)
+                                   avg_cost=price, current_price=price, opened_ts=time.time())
                     s.add(pos)
                 else:
                     total_qty = pos.quantity + qty
                     pos.avg_cost = (pos.quantity * pos.avg_cost + qty * price) / total_qty if total_qty else price
                     pos.quantity = total_qty
                     pos.current_price = price
+                    if not pos.opened_ts:
+                        pos.opened_ts = time.time()
             else:  # SELL
                 if pos is None or pos.quantity <= 0:
                     return OrderResult(status=ERROR, symbol=symbol, side=side,
                                        message="No position to sell.")
                 sell_qty = min(qty, pos.quantity)
                 proceeds = sell_qty * price
+                cost_basis = sell_qty * pos.avg_cost
                 acc.balance += proceeds
                 pos.quantity -= sell_qty
                 pos.current_price = price
                 notional = proceeds
                 qty = sell_qty
+                # Record the closed lot for win-rate / best-worst / hold-time reporting.
+                db.record_realized_trade(s, symbol, sell_qty, cost_basis, proceeds,
+                                         opened_ts=pos.opened_ts or time.time(), closed_ts=time.time())
                 if pos.quantity <= 1e-9:
                     s.delete(pos)
 

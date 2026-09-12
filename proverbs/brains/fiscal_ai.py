@@ -41,6 +41,15 @@ class FiscalInsight:
     volatility: float
     moving_averages: Dict[str, float] = field(default_factory=dict)
     model: str = "heuristic"
+    # Feature vector (the inputs behind the signal) + raw model probability.
+    features: Dict[str, float] = field(default_factory=dict)
+    proba_up: float = 0.5
+    # Market context.
+    volume: float = 0.0
+    day_high: float = 0.0
+    day_low: float = 0.0
+    week52_high: float = 0.0
+    week52_low: float = 0.0
 
     @property
     def label(self) -> str:
@@ -183,14 +192,34 @@ class FiscalAI:
         model_out = _model_signal(feat, close)
         if model_out is not None:
             signal, confidence, model_name = model_out["signal"], model_out["confidence"], "HistGradientBoosting"
+            proba_up = model_out["proba_up"]
         else:
             h = _heuristic_signal(feat, trend)
             signal, confidence, model_name = h["signal"], h["confidence"], "heuristic"
+            proba_up = float(np.clip((signal + 1.0) / 2.0, 0.0, 1.0))  # derive from signal
 
         mas = {}
         for w in (20, 50, 200):
             if len(close) >= w:
                 mas[f"MA{w}"] = round(float(close.rolling(w).mean().iloc[-1]), 4)
+
+        # Latest (most recent) feature row, NaNs coerced to 0.
+        feat_keys = ["rsi", "macd_hist", "bb_pos", "volume_z", "ma_ratio_20", "ma_ratio_50", "ma_ratio_200"]
+        features: Dict[str, float] = {k: 0.0 for k in feat_keys}
+        if not feat.empty:
+            last_row = feat.iloc[-1]
+            for k in feat_keys:
+                if k in feat.columns:
+                    val = last_row.get(k)
+                    features[k] = float(val) if val is not None and not np.isnan(val) else 0.0
+
+        # Market context.
+        volume = float(df["Volume"].dropna().iloc[-1]) if "Volume" in df.columns and not df["Volume"].dropna().empty else 0.0
+        day_high = float(df["High"].dropna().iloc[-1]) if "High" in df.columns and not df["High"].dropna().empty else 0.0
+        day_low = float(df["Low"].dropna().iloc[-1]) if "Low" in df.columns and not df["Low"].dropna().empty else 0.0
+        window52 = close.tail(252)
+        week52_high = float(window52.max()) if not window52.empty else 0.0
+        week52_low = float(window52.min()) if not window52.empty else 0.0
 
         return FiscalInsight(
             symbol=symbol.upper(),
@@ -205,4 +234,11 @@ class FiscalAI:
             volatility=round(risk["volatility"], 6),
             moving_averages=mas,
             model=model_name,
+            features={k: round(v, 6) for k, v in features.items()},
+            proba_up=round(float(np.clip(proba_up, 0.0, 1.0)), 4),
+            volume=volume,
+            day_high=round(day_high, 4),
+            day_low=round(day_low, 4),
+            week52_high=round(week52_high, 4),
+            week52_low=round(week52_low, 4),
         )

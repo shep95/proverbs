@@ -123,6 +123,9 @@
                               : `<span>Ran ${s.elapsed_human}</span>`) +
         `<span>${s.cycles} cycles</span>`;
 
+      const acc = r.accuracy || {};
+      const winRate = (t.win_rate === null || t.win_rate === undefined) ? "—" : (t.win_rate*100).toFixed(0)+"%";
+      const hitRate = (!acc.hit_rate && acc.hit_rate !== 0) ? "—" : (acc.hit_rate*100).toFixed(0)+`% (${acc.graded})`;
       $("tiles").innerHTML =
         tile("Starting capital", money(p.starting_capital)) +
         tile("Current equity", money(p.current_equity)) +
@@ -131,6 +134,10 @@
         tile("Max drawdown", p.max_drawdown_pct.toFixed(2)+"%", "var(--red)") +
         tile("Sharpe (per cycle)", p.sharpe_per_cycle.toFixed(2)) +
         tile("Trades", `${t.count} (${t.buys}B/${t.sells}S)`) +
+        tile("Win rate", winRate) +
+        tile("Best / worst trade", money(t.best_trade||0)+" / "+money(t.worst_trade||0)) +
+        tile("Avg hold", t.avg_hold || "—") +
+        tile("Signal accuracy", hitRate) +
         tile("Cash / invested", money(p.cash)+" / "+money(p.invested));
 
       const curve = r.equity_curve || [];

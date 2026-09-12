@@ -13,14 +13,18 @@ Tables:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -75,6 +79,7 @@ class Position(Base):
     quantity: Mapped[float] = mapped_column(Float, default=0.0)
     avg_cost: Mapped[float] = mapped_column(Float, default=0.0)
     current_price: Mapped[float] = mapped_column(Float, default=0.0)
+    opened_ts: Mapped[float] = mapped_column(Float, default=0.0)  # epoch of first buy
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     account: Mapped["Account"] = relationship(back_populates="positions")
@@ -104,8 +109,47 @@ class Signal(Base):
     last_price: Mapped[float] = mapped_column(Float, default=0.0)
     sharpe_ratio: Mapped[float] = mapped_column(Float, default=0.0)
     var_95: Mapped[float] = mapped_column(Float, default=0.0)
+    model: Mapped[str] = mapped_column(String(32), default="")
+    proba_up: Mapped[float] = mapped_column(Float, default=0.5)
+
+    # Fiscal feature vector (the inputs that produced the signal).
+    rsi: Mapped[float] = mapped_column(Float, default=0.0)
+    macd_hist: Mapped[float] = mapped_column(Float, default=0.0)
+    bb_pos: Mapped[float] = mapped_column(Float, default=0.0)
+    volume_z: Mapped[float] = mapped_column(Float, default=0.0)
+    ma_ratio_20: Mapped[float] = mapped_column(Float, default=0.0)
+    ma_ratio_50: Mapped[float] = mapped_column(Float, default=0.0)
+    ma_ratio_200: Mapped[float] = mapped_column(Float, default=0.0)
+
+    # Market context at signal time.
+    volume: Mapped[float] = mapped_column(Float, default=0.0)
+    day_high: Mapped[float] = mapped_column(Float, default=0.0)
+    day_low: Mapped[float] = mapped_column(Float, default=0.0)
+    week52_high: Mapped[float] = mapped_column(Float, default=0.0)
+    week52_low: Mapped[float] = mapped_column(Float, default=0.0)
+
+    # Cultural detail.
+    cultural_positive: Mapped[int] = mapped_column(Integer, default=0)
+    cultural_neutral: Mapped[int] = mapped_column(Integer, default=0)
+    cultural_negative: Mapped[int] = mapped_column(Integer, default=0)
+    cultural_sample: Mapped[int] = mapped_column(Integer, default=0)
+    news_sources: Mapped[str] = mapped_column(String(256), default="")
+    top_headlines: Mapped[str] = mapped_column(Text, default="")  # JSON list
+
+    # Accuracy grading (filled once a later price is available).
+    predicted_up: Mapped[int] = mapped_column(Integer, default=0)   # 1 = predicted up
+    graded_ts: Mapped[float] = mapped_column(Float, default=0.0)    # 0 = ungraded
+    outcome_price: Mapped[float] = mapped_column(Float, default=0.0)
+    outcome_return: Mapped[float] = mapped_column(Float, default=0.0)
+    correct: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 1/0/None
 
     def to_dict(self) -> dict:
+        headlines = []
+        if self.top_headlines:
+            try:
+                headlines = json.loads(self.top_headlines)
+            except Exception:
+                headlines = []
         return {
             "timestamp": self.timestamp.isoformat(),
             "symbol": self.symbol,
@@ -117,6 +161,39 @@ class Signal(Base):
             "last_price": round(self.last_price, 4),
             "sharpe_ratio": round(self.sharpe_ratio, 4),
             "var_95": round(self.var_95, 6),
+            "model": self.model,
+            "proba_up": round(self.proba_up, 4),
+            "features": {
+                "rsi": round(self.rsi, 2),
+                "macd_hist": round(self.macd_hist, 6),
+                "bb_pos": round(self.bb_pos, 4),
+                "volume_z": round(self.volume_z, 4),
+                "ma_ratio_20": round(self.ma_ratio_20, 4),
+                "ma_ratio_50": round(self.ma_ratio_50, 4),
+                "ma_ratio_200": round(self.ma_ratio_200, 4),
+            },
+            "market": {
+                "volume": self.volume,
+                "day_high": round(self.day_high, 4),
+                "day_low": round(self.day_low, 4),
+                "week52_high": round(self.week52_high, 4),
+                "week52_low": round(self.week52_low, 4),
+            },
+            "cultural": {
+                "positive": self.cultural_positive,
+                "neutral": self.cultural_neutral,
+                "negative": self.cultural_negative,
+                "sample": self.cultural_sample,
+                "sources": self.news_sources,
+                "headlines": headlines,
+            },
+            "grading": {
+                "graded": bool(self.graded_ts),
+                "predicted_up": bool(self.predicted_up),
+                "outcome_price": round(self.outcome_price, 4),
+                "outcome_return": round(self.outcome_return, 6),
+                "correct": (None if self.correct is None else bool(self.correct)),
+            },
         }
 
 
@@ -176,3 +253,55 @@ class EquitySnapshot(Base):
 
     def to_dict(self) -> dict:
         return {"ts": self.ts, "equity": round(self.equity, 2), "cash": round(self.cash, 2)}
+
+
+class WatchlistItem(Base):
+    """Runtime-mutable watchlist (seeded from the WATCHLIST env var on first run)."""
+    __tablename__ = "watchlist"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    symbol: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    added_by: Mapped[str] = mapped_column(String(64), default="")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class Alert(Base):
+    """A per-user score threshold alert (fires once, then deactivates)."""
+    __tablename__ = "alerts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    channel_id: Mapped[str] = mapped_column(String(64), default="")
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    direction: Mapped[str] = mapped_column(String(8))  # above | below
+    threshold: Mapped[float] = mapped_column(Float, default=0.0)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    fired_ts: Mapped[float] = mapped_column(Float, default=0.0)
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "user_id": self.user_id, "symbol": self.symbol,
+                "direction": self.direction, "threshold": round(self.threshold, 4),
+                "active": self.active}
+
+
+class RealizedTrade(Base):
+    """A closed (sold) paper lot, for win-rate / best-worst / hold-time reporting."""
+    __tablename__ = "realized_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(16), index=True)
+    quantity: Mapped[float] = mapped_column(Float, default=0.0)
+    cost_basis: Mapped[float] = mapped_column(Float, default=0.0)
+    proceeds: Mapped[float] = mapped_column(Float, default=0.0)
+    pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    opened_ts: Mapped[float] = mapped_column(Float, default=0.0)
+    closed_ts: Mapped[float] = mapped_column(Float, default=0.0)
+
+    def to_dict(self) -> dict:
+        return {"symbol": self.symbol, "quantity": round(self.quantity, 6),
+                "cost_basis": round(self.cost_basis, 2), "proceeds": round(self.proceeds, 2),
+                "pnl": round(self.pnl, 2), "opened_ts": self.opened_ts, "closed_ts": self.closed_ts,
+                "hold_seconds": max(0.0, self.closed_ts - self.opened_ts)}

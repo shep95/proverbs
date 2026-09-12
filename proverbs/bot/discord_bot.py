@@ -181,6 +181,29 @@ def cycle_alert_embed(report: CycleReport) -> Optional[discord.Embed]:
     return embed
 
 
+async def _post_triggered_alerts(bot: commands.Bot, report) -> None:
+    """Notify users whose score alerts fired this cycle (channel mention, DM fallback)."""
+    for a in getattr(report, "triggered_alerts", []) or []:
+        text = (f"🔔 <@{a['user_id']}> alert: **{a['symbol']}** combined score "
+                f"{a['score']:+.2f} is {a['direction']} your threshold {a['threshold']:+.2f}.")
+        sent = False
+        chan_id = a.get("channel_id")
+        if chan_id:
+            try:
+                channel = bot.get_channel(int(chan_id))
+                if channel is not None:
+                    await channel.send(text)
+                    sent = True
+            except Exception:
+                pass
+        if not sent:
+            try:
+                user = await bot.fetch_user(int(a["user_id"]))
+                await user.send(text)
+            except Exception:
+                logger.warning("Could not deliver alert to user %s", a.get("user_id"))
+
+
 # ------------------------------------------------------------------- bot
 def build_bot() -> commands.Bot:
     intents = discord.Intents.default()
@@ -196,6 +219,7 @@ def build_bot() -> commands.Bot:
         except Exception:
             logger.exception("engine_loop: cycle failed")
             return
+        await _post_triggered_alerts(bot, report)
         if settings.alert_channel_id is None:
             return
         channel = bot.get_channel(settings.alert_channel_id)
@@ -287,6 +311,7 @@ def _register_commands(bot: commands.Bot) -> None:
     async def runcycle(interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)
         report = await asyncio.to_thread(engine.run_cycle)
+        await _post_triggered_alerts(bot, report)
         await interaction.followup.send(embed=cycle_summary_embed(report))
 
     @tree.command(name="balance", description="Show your paper account balance.")
@@ -353,10 +378,183 @@ def _register_commands(bot: commands.Bot) -> None:
                 inline=False)
         await interaction.response.send_message(embed=embed)
 
-    @tree.command(name="watchlist", description="Show the tickers proverbs is tracking.")
-    async def watchlist(interaction: discord.Interaction):
+    # ------------------------------------------------------- /watchlist group
+    watchlist_grp = app_commands.Group(name="watchlist", description="View or edit the tracked tickers.")
+
+    @watchlist_grp.command(name="show", description="Show the tickers proverbs is tracking.")
+    async def wl_show(interaction: discord.Interaction):
+        symbols = await asyncio.to_thread(engine.watchlist)
         await interaction.response.send_message(
-            "👀 Watchlist: " + ", ".join(f"`{s}`" for s in settings.watchlist))
+            "👀 Watchlist: " + ", ".join(f"`{s}`" for s in symbols))
+
+    @watchlist_grp.command(name="add", description="Add a ticker to the watchlist.")
+    @app_commands.describe(symbol="Ticker to add, e.g. NVDA")
+    async def wl_add(interaction: discord.Interaction, symbol: str):
+        added = await asyncio.to_thread(engine.add_to_watchlist, symbol, uid(interaction))
+        msg = f"✅ Added `{symbol.upper()}`." if added else f"`{symbol.upper()}` is already on the watchlist."
+        await interaction.response.send_message(msg)
+
+    @watchlist_grp.command(name="remove", description="Remove a ticker from the watchlist.")
+    @app_commands.describe(symbol="Ticker to remove")
+    async def wl_remove(interaction: discord.Interaction, symbol: str):
+        removed = await asyncio.to_thread(engine.remove_from_watchlist, symbol)
+        msg = f"🗑️ Removed `{symbol.upper()}`." if removed else f"`{symbol.upper()}` wasn't on the watchlist."
+        await interaction.response.send_message(msg)
+
+    tree.add_command(watchlist_grp)
+
+    # ------------------------------------------------------ analytics commands
+    @tree.command(name="top", description="Rank the watchlist by combined score (best first).")
+    async def top(interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        signals = await asyncio.to_thread(engine.latest_signals)
+        if not signals:
+            await interaction.followup.send("No signals yet — run `/runcycle` first.")
+            return
+        signals.sort(key=lambda s: s["combined_score"], reverse=True)
+        embed = discord.Embed(title="🏆 Watchlist ranking", color=discord.Color.blurple())
+        medals = ["🥇", "🥈", "🥉"]
+        for i, sig in enumerate(signals):
+            rank = medals[i] if i < 3 else f"{i+1}."
+            emoji = {"BUY": "🟢", "HOLD": "🟡", "REDUCE": "🔴"}.get(sig["action"], "⚪")
+            embed.add_field(
+                name=f"{rank} {sig['symbol']} {emoji} {sig['action']}",
+                value=f"score {sig['combined_score']:+.2f} · conf {sig['confidence']*100:.0f}% "
+                      f"· ${sig['last_price']:,.2f}",
+                inline=False)
+        await interaction.followup.send(embed=embed)
+
+    @tree.command(name="compare", description="Compare two tickers side by side.")
+    @app_commands.describe(symbol1="First ticker", symbol2="Second ticker")
+    async def compare(interaction: discord.Interaction, symbol1: str, symbol2: str):
+        await interaction.response.defer(thinking=True)
+        d1, d2 = await asyncio.gather(
+            asyncio.to_thread(_analyze_symbol, symbol1),
+            asyncio.to_thread(_analyze_symbol, symbol2))
+        if d1 is None or d2 is None:
+            missing = symbol1 if d1 is None else symbol2
+            await interaction.followup.send(f"Couldn't fetch data for `{missing.upper()}`.")
+            return
+        embed = discord.Embed(title=f"⚖️ {d1.symbol} vs {d2.symbol}", color=discord.Color.blurple())
+        def col(d):
+            return (f"{d.emoji} **{d.action}**\ncombined {d.combined_score:+.2f}\n"
+                    f"fiscal {d.fiscal_signal:+.2f}\ncultural {d.cultural_signal:+.2f}\n"
+                    f"conf {d.confidence*100:.0f}%\n"
+                    f"${d.fiscal.last_price:,.2f}" if d.fiscal else "n/a")
+        embed.add_field(name=d1.symbol, value=col(d1), inline=True)
+        embed.add_field(name=d2.symbol, value=col(d2), inline=True)
+        winner = d1 if d1.combined_score >= d2.combined_score else d2
+        embed.set_footer(text=f"Stronger signal: {winner.symbol} ({winner.combined_score:+.2f})")
+        await interaction.followup.send(embed=embed)
+
+    @tree.command(name="signalhistory", description="Show how a ticker's signal evolved over time.")
+    @app_commands.describe(symbol="Ticker", limit="How many recent signals (default 10)")
+    async def signalhistory(interaction: discord.Interaction, symbol: str, limit: Optional[int] = 10):
+        await interaction.response.defer(thinking=True)
+        limit = max(1, min(25, limit or 10))
+        history = await asyncio.to_thread(engine.signal_history, symbol, limit)
+        if not history:
+            await interaction.followup.send(f"No signal history for `{symbol.upper()}` yet.")
+            return
+        embed = discord.Embed(title=f"📈 {symbol.upper()} signal history", color=discord.Color.blurple())
+        for sig in history:
+            g = sig.get("grading", {})
+            mark = "✅" if g.get("correct") is True else "❌" if g.get("correct") is False else "⏳"
+            when = sig["timestamp"][:16].replace("T", " ")
+            embed.add_field(
+                name=f"{when} · {sig['action']} {mark}",
+                value=f"combined {sig['combined_score']:+.2f} · conf {sig['confidence']*100:.0f}% "
+                      f"· ${sig['last_price']:,.2f}",
+                inline=False)
+        acc = await asyncio.to_thread(engine.accuracy_stats, symbol)
+        if acc["graded"]:
+            embed.set_footer(text=f"Signal accuracy: {acc['correct']}/{acc['graded']} "
+                                  f"({acc['hit_rate']*100:.0f}%) · ✅ right ❌ wrong ⏳ pending")
+        await interaction.followup.send(embed=embed)
+
+    @tree.command(name="explain", description="Plain-language breakdown of a ticker's signal.")
+    @app_commands.describe(symbol="Ticker to explain")
+    async def explain(interaction: discord.Interaction, symbol: str):
+        await interaction.response.defer(thinking=True)
+        decision = await asyncio.to_thread(_analyze_symbol, symbol)
+        if decision is None or decision.fiscal is None:
+            await interaction.followup.send(f"Couldn't fetch data for `{symbol.upper()}`.")
+            return
+        f = decision.fiscal
+        c = decision.cultural
+        feats = f.features or {}
+        drivers = []
+        rsi = feats.get("rsi", 0.0)
+        if rsi:
+            drivers.append(f"RSI **{rsi:.0f}** ({'overbought' if rsi>70 else 'oversold' if rsi<30 else 'neutral'})")
+        if feats.get("macd_hist", 0.0):
+            drivers.append(f"MACD histogram {'positive' if feats['macd_hist']>0 else 'negative'}")
+        if "bb_pos" in feats:
+            bb = feats["bb_pos"]
+            drivers.append(f"price {'upper' if bb>0 else 'lower'} Bollinger band ({bb:+.2f})")
+        for w in (20, 50, 200):
+            r = feats.get(f"ma_ratio_{w}")
+            if r:
+                drivers.append(f"{'above' if r>0 else 'below'} MA{w} ({r*100:+.1f}%)")
+        embed = discord.Embed(
+            title=f"🧠 Why {decision.emoji} {decision.symbol} → {decision.action}",
+            description=decision.rationale(), color=discord.Color.blurple())
+        embed.add_field(name="Fiscal read",
+                        value=(f"signal {f.signal:+.2f} · model {f.model} · "
+                               f"P(up) {f.proba_up*100:.0f}%\nSharpe {f.sharpe_ratio:.2f} · "
+                               f"95% VaR {f.var_95*100:.2f}%"), inline=False)
+        if drivers:
+            embed.add_field(name="What moved the fiscal signal", value="• " + "\n• ".join(drivers), inline=False)
+        if c:
+            embed.add_field(name=f"Cultural read ({c.label})",
+                            value=f"index {c.index:+.2f} · {c.positive}+/{c.neutral}◦/{c.negative}− "
+                                  f"of {c.sample_size} headlines", inline=False)
+            if c.headlines:
+                embed.add_field(name="Top headlines",
+                                value="\n".join(f"• {h[:90]}" for h in c.headlines[:3]), inline=False)
+        acc = await asyncio.to_thread(engine.accuracy_stats, symbol)
+        if acc["graded"]:
+            embed.set_footer(text=f"Past signal accuracy for {decision.symbol}: "
+                                  f"{acc['hit_rate']*100:.0f}% over {acc['graded']} graded calls")
+        await interaction.followup.send(embed=embed)
+
+    @tree.command(name="setweights", description="Set fiscal/cultural signal weights (runtime).")
+    @app_commands.describe(fiscal="Fiscal weight (e.g. 0.65)", cultural="Cultural weight (e.g. 0.35)")
+    async def setweights(interaction: discord.Interaction, fiscal: float, cultural: float):
+        res = await asyncio.to_thread(engine.set_weights, fiscal, cultural)
+        if res["status"] != "success":
+            await interaction.response.send_message(f"⚠️ {res['message']}", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"⚖️ Weights set → fiscal **{res['fiscal_weight']:.2f}**, "
+            f"cultural **{res['cultural_weight']:.2f}**.\n_{res['note']}_")
+
+    @tree.command(name="alert", description="Get notified when a ticker's combined score crosses a level.")
+    @app_commands.describe(symbol="Ticker", direction="above or below", score="Threshold, e.g. 0.5")
+    @app_commands.choices(direction=[
+        app_commands.Choice(name="above", value="above"),
+        app_commands.Choice(name="below", value="below"),
+    ])
+    async def alert(interaction: discord.Interaction, symbol: str,
+                    direction: app_commands.Choice[str], score: float):
+        chan_id = str(interaction.channel_id or "")
+        res = await asyncio.to_thread(engine.add_alert, uid(interaction), chan_id,
+                                      symbol, direction.value, score)
+        if res["status"] != "success":
+            await interaction.response.send_message(f"⚠️ {res['message']}", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"🔔 Alert set: I'll ping you when **{symbol.upper()}** combined score goes "
+            f"**{direction.value} {score:+.2f}**.")
+
+    @tree.command(name="alerts", description="List your active alerts.")
+    async def alerts_list(interaction: discord.Interaction):
+        rows = await asyncio.to_thread(engine.list_alerts, uid(interaction))
+        if not rows:
+            await interaction.response.send_message("You have no active alerts.", ephemeral=True)
+            return
+        lines = [f"• **{r['symbol']}** {r['direction']} {r['threshold']:+.2f}" for r in rows]
+        await interaction.response.send_message("🔔 Your alerts:\n" + "\n".join(lines), ephemeral=True)
 
     # ---------------------------------------------------------- trading cmds
     @tree.command(name="trading", description="Show broker status, mode, and risk limits.")
@@ -513,6 +711,24 @@ def _register_commands(bot: commands.Bot) -> None:
         file = discord.File(io.BytesIO(data), filename=fname)
         await interaction.followup.send(embed=embed, file=file)
 
+    @papertrade.command(name="leaderboard", description="Rank finished sessions by return %.")
+    async def pt_leaderboard(interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        rows = await asyncio.to_thread(sessions.leaderboard, 10)
+        if not rows:
+            await interaction.followup.send("No finished sessions yet. Run one with `/papertrade start`.")
+            return
+        embed = discord.Embed(title="🏆 Paper-trading leaderboard", color=discord.Color.gold())
+        medals = ["🥇", "🥈", "🥉"]
+        for i, r in enumerate(rows):
+            rank = medals[i] if i < 3 else f"{i+1}."
+            up = r["return_pct"] >= 0
+            embed.add_field(
+                name=f"{rank} {r['label']} ({'+' if up else ''}{r['return_pct']:.2f}%)",
+                value=f"${r['starting_capital']:,.0f} → ${r['final_equity']:,.2f} · {r['status']}",
+                inline=False)
+        await interaction.followup.send(embed=embed)
+
     tree.add_command(papertrade)
 
     @tree.command(name="help", description="What proverbs can do.")
@@ -522,7 +738,11 @@ def _register_commands(bot: commands.Bot) -> None:
             description="A three-brain paper-trading signal bot. **Simulation only — not financial advice.**",
             color=discord.Color.blurple())
         embed.add_field(name="Signals",
-                        value="`/signal [ticker]` · `/analyze <ticker>` · `/runcycle` · `/watchlist`", inline=False)
+                        value="`/signal [ticker]` · `/analyze <ticker>` · `/runcycle` · `/top` · "
+                              "`/compare <a> <b>` · `/signalhistory <ticker>` · `/explain <ticker>`", inline=False)
+        embed.add_field(name="Config",
+                        value="`/watchlist show|add|remove` · `/setweights <fiscal> <cultural>` · "
+                              "`/alert <ticker> <above|below> <score>` · `/alerts`", inline=False)
         embed.add_field(name="Account",
                         value="`/balance` · `/deposit <amt>` · `/withdraw <amt>` · "
                               "`/risk <level>` · `/portfolio` · `/history`", inline=False)
@@ -531,7 +751,7 @@ def _register_commands(bot: commands.Bot) -> None:
                               "`/mode <dry-run|live>` · `/kill` · `/resume`", inline=False)
         embed.add_field(name="Paper-trading sessions (investor reports)",
                         value="`/papertrade start <amount> <duration>` · `/papertrade status` · "
-                              "`/papertrade stop` · `/papertrade report`", inline=False)
+                              "`/papertrade stop` · `/papertrade report` · `/papertrade leaderboard`", inline=False)
         embed.set_footer(text="Trading defaults to DRY-RUN. Alerts post to the configured channel.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 

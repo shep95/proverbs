@@ -32,6 +32,7 @@ class CulturalInsight:
     negative: int
     sample_size: int
     headlines: List[str] = field(default_factory=list)
+    sources: List[str] = field(default_factory=list)
 
     @property
     def label(self) -> str:
@@ -130,6 +131,7 @@ class CulturalAI:
         index = sum(s * w for s, w in zip(scores, weights)) / wsum
         index = max(-1.0, min(1.0, index))
 
+        sources = list(dict.fromkeys(h.source for h in headlines if h.source))[:5]
         return CulturalInsight(
             symbol=symbol,
             index=round(index, 4),
@@ -138,4 +140,5 @@ class CulturalAI:
             negative=neg,
             sample_size=len(scores),
             headlines=[h.title for h in headlines[:5]],
+            sources=sources,
         )

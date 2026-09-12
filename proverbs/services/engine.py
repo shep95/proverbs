@@ -24,7 +24,9 @@ from __future__ import annotations
 import logging
 import random
 import threading
+import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from proverbs.brains.cultural_ai import CulturalAI
@@ -60,6 +62,8 @@ class CycleReport:
     balance_after: float = 0.0
     withdrawals: List[WithdrawalEvent] = field(default_factory=list)
     orders: List[OrderResult] = field(default_factory=list)
+    triggered_alerts: List[dict] = field(default_factory=list)
+    graded: int = 0
     errors: List[str] = field(default_factory=list)
 
 
@@ -73,10 +77,14 @@ class Engine:
     # ------------------------------------------------------------------ cycle
     def run_cycle(self, symbols: Optional[List[str]] = None) -> CycleReport:
         """Run a full analysis cycle. Thread-safe (scheduler + manual triggers)."""
-        symbols = symbols or settings.watchlist
+        if symbols is None:
+            with db.session_scope() as s:
+                symbols = db.get_watchlist(s)
         with self._lock:
             report = CycleReport()
             scores: List[float] = []
+            prices: Dict[str, float] = {}       # symbol -> latest price (for grading)
+            score_map: Dict[str, float] = {}    # symbol -> combined score (for alerts)
 
             for symbol in symbols:
                 try:
@@ -85,6 +93,9 @@ class Engine:
                     decision = self.orchestrator.decide(fiscal, cultural, symbol)
                     report.decisions.append(decision)
                     scores.append(decision.combined_score)
+                    score_map[symbol.upper()] = decision.combined_score
+                    if fiscal and fiscal.last_price > 0:
+                        prices[symbol.upper()] = fiscal.last_price
                     with db.session_scope() as s:
                         db.save_signal(s, decision)
                     # Route the decision to the broker (dry-run/paper by default).
@@ -101,6 +112,9 @@ class Engine:
                     report.errors.append(f"{symbol}: {exc}")
 
             report.avg_score = round(sum(scores) / len(scores), 4) if scores else 0.0
+            # Grade older signals against the fresh prices, and fire any alerts.
+            report.graded = self._grade_signals(prices)
+            report.triggered_alerts = self._evaluate_alerts(score_map)
             self._apply_simulation(report)
             # Snapshot the paper session's equity curve and auto-expire if due.
             try:
@@ -137,6 +151,90 @@ class Engine:
                 logger.info("Auto-withdrawal triggered: $%.2f", result.amount)
 
             report.balance_after = round(acc.balance, 2)
+
+    # ------------------------------------------------------- accuracy grading
+    def _grade_signals(self, prices: Dict[str, float]) -> int:
+        """Grade ungraded signals older than the horizon against the fresh price."""
+        if not prices:
+            return 0
+        horizon = settings.accuracy_horizon_hours * 3600
+        cutoff_dt = datetime.utcfromtimestamp(time.time() - horizon)
+        now = time.time()
+        graded = 0
+        with db.session_scope() as s:
+            for symbol, price in prices.items():
+                if price <= 0:
+                    continue
+                for sig in db.ungraded_signals(s, symbol, cutoff_dt):
+                    actual_up = price > sig.last_price
+                    predicted_up = sig.predicted_up == 1
+                    sig.correct = 1 if actual_up == predicted_up else 0
+                    sig.outcome_price = price
+                    sig.outcome_return = (price - sig.last_price) / sig.last_price if sig.last_price else 0.0
+                    sig.graded_ts = now
+                    graded += 1
+        if graded:
+            logger.info("Engine: graded %d past signal(s).", graded)
+        return graded
+
+    def _evaluate_alerts(self, score_map: Dict[str, float]) -> List[dict]:
+        """Fire any per-user score alerts crossed this cycle (one-shot)."""
+        if not score_map:
+            return []
+        triggered: List[dict] = []
+        now = time.time()
+        with db.session_scope() as s:
+            for a in db.active_alerts(s):
+                if a.symbol not in score_map:
+                    continue
+                score = score_map[a.symbol]
+                hit = ((a.direction == "above" and score >= a.threshold) or
+                       (a.direction == "below" and score <= a.threshold))
+                if hit:
+                    a.active = False
+                    a.fired_ts = now
+                    triggered.append({"user_id": a.user_id, "channel_id": a.channel_id,
+                                      "symbol": a.symbol, "direction": a.direction,
+                                      "threshold": round(a.threshold, 4), "score": round(score, 4)})
+        return triggered
+
+    def accuracy_stats(self, symbol: Optional[str] = None) -> dict:
+        with db.session_scope() as s:
+            return db.accuracy_stats(s, symbol)
+
+    # ------------------------------------------------------- watchlist/weights
+    def watchlist(self) -> List[str]:
+        with db.session_scope() as s:
+            return db.get_watchlist(s)
+
+    def add_to_watchlist(self, symbol: str, added_by: str = "") -> bool:
+        with db.session_scope() as s:
+            return db.add_watch(s, symbol, added_by)
+
+    def remove_from_watchlist(self, symbol: str) -> bool:
+        with db.session_scope() as s:
+            return db.remove_watch(s, symbol)
+
+    def set_weights(self, fiscal: float, cultural: float) -> Dict:
+        if fiscal < 0 or cultural < 0 or (fiscal + cultural) <= 0:
+            return {"status": "error", "message": "Weights must be non-negative and not both zero."}
+        settings.fiscal_weight = float(fiscal)
+        settings.cultural_weight = float(cultural)
+        fw, cw = settings.normalised_weights
+        return {"status": "success", "fiscal_weight": round(fw, 4), "cultural_weight": round(cw, 4),
+                "note": "Runtime override (resets to env defaults on restart)."}
+
+    def add_alert(self, user_id: str, channel_id: str, symbol: str,
+                  direction: str, threshold: float) -> Dict:
+        if direction.lower() not in ("above", "below"):
+            return {"status": "error", "message": "Direction must be 'above' or 'below'."}
+        with db.session_scope() as s:
+            alert = db.add_alert(s, user_id, channel_id, symbol, direction, threshold)
+            return {"status": "success", **alert.to_dict()}
+
+    def list_alerts(self, user_id: str) -> List[dict]:
+        with db.session_scope() as s:
+            return [a.to_dict() for a in db.list_alerts(s, user_id)]
 
     # --------------------------------------------------------------- accounts
     def deposit(self, discord_user_id: str, amount: float, display_name: str = "") -> Dict:

@@ -65,13 +65,15 @@ answers slash commands, and it ships a live web dashboard as a secondary view.
 | --- | --- |
 | `/signal [ticker]` | Latest signal(s); pass a ticker for a fresh single-symbol read |
 | `/analyze <ticker>` | Run a full analysis on a ticker right now |
-| `/balance` | Your paper account balance & risk level |
-| `/deposit <amount>` | Deposit into your paper account |
-| `/withdraw <amount>` | Withdraw from your paper account |
-| `/risk <Low\|Medium\|High>` | Set your risk level |
-| `/portfolio` | Account + any positions |
-| `/history` | Recent transactions |
-| `/watchlist` | Tickers being tracked |
+| `/runcycle` | Run a full analyze-and-trade cycle on demand |
+| `/top` | Rank the whole watchlist by combined score |
+| `/compare <a> <b>` | Side-by-side signal comparison of two tickers |
+| `/signalhistory <ticker> [limit]` | How a ticker's signal evolved, with ✅/❌ accuracy marks |
+| `/explain <ticker>` | Plain-language breakdown of *why* the bot made the call |
+| `/balance` `/deposit` `/withdraw` `/risk` `/portfolio` `/history` | Paper account |
+| `/watchlist show\|add\|remove` | View or edit the tracked tickers at runtime |
+| `/setweights <fiscal> <cultural>` | Adjust the fiscal/cultural blend at runtime |
+| `/alert <ticker> <above\|below> <score>` · `/alerts` | Per-user score alerts |
 | `/help` · `/ping` | Help / liveness |
 
 Scheduled alerts (notable BUY/REDUCE calls + auto-withdrawals + orders) post
@@ -85,6 +87,31 @@ automatically to `DISCORD_ALERT_CHANNEL_ID` every `CYCLE_INTERVAL_MINUTES`.
 | `/order <buy\|sell> <ticker> <amount>` | Place a manual order (respects all safeguards) |
 | `/mode <dry-run\|live>` | Switch between dry-run and LIVE trading |
 | `/kill` · `/resume` | Halt / resume all trading instantly (runtime kill switch) |
+| `/papertrade start\|status\|stop\|report\|leaderboard` | Investor paper-trading sessions |
+
+---
+
+## Analytics & transparency
+
+Every signal is now stored with its **full context**, so calls can be audited and
+the model graded — not just `BUY`/`HOLD`/`REDUCE`:
+
+- **Feature vector:** RSI, MACD histogram, Bollinger position, volume z-score,
+  20/50/200-day MA ratios, and the raw model probability `P(up)`.
+- **Market context:** volume, day high/low, 52-week high/low.
+- **Cultural detail:** positive/neutral/negative counts, sample size, news
+  sources, and the top headlines behind the sentiment index.
+
+**Signal-accuracy tracking.** The model predicts next-day direction; each cycle
+the engine looks back and grades earlier signals against the realized price once
+`ACCURACY_HORIZON_HOURS` (default 24) have passed — recording whether the call
+was right. Hit-rate shows up in `/signalhistory`, `/explain`, the investor report,
+and `GET /api/accuracy`.
+
+**Richer investor report.** `/papertrade report` and `/report` now include
+**win rate, best/worst trade, average hold time** (from a realized-trade ledger)
+and **signal accuracy**, alongside return, drawdown, Sharpe, and the equity curve.
+`/papertrade leaderboard` ranks finished sessions by return %.
 
 ---
 
@@ -246,7 +273,8 @@ for the full annotated list. Highlights:
 `GET /healthz` · `GET /api/signal[?symbol=]` · `GET /api/balance` ·
 `GET /api/portfolio` · `GET /api/history` · `GET /api/trading` ·
 `GET /api/positions` · `GET /report` (investor report page) ·
-`GET /api/report` · `POST /api/deposit` · `POST /api/withdraw` ·
+`GET /api/report` · `GET /api/accuracy` · `GET /api/leaderboard` ·
+`GET /api/watchlist` · `POST /api/deposit` · `POST /api/withdraw` ·
 `POST /api/risk` · `POST /api/cycle`
 
 ---

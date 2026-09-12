@@ -208,6 +208,22 @@ class SessionManager:
             sells = (s.query(Transaction)
                      .join(Transaction.account)
                      .filter(Transaction.kind == "paper_sell", Transaction.timestamp >= start_dt).count())
+            # Closed-lot stats (win rate / best / worst / avg hold) for this session window.
+            realized = db.realized_trades_since(s, row.start_ts)
+            closed = len(realized)
+            wins = sum(1 for t in realized if t.pnl > 0)
+            best = max((t.pnl for t in realized), default=0.0)
+            worst = min((t.pnl for t in realized), default=0.0)
+            avg_hold = (sum(max(0.0, t.closed_ts - t.opened_ts) for t in realized) / closed) if closed else 0.0
+            trade_stats = {
+                "closed_trades": closed,
+                "win_rate": round(wins / closed, 4) if closed else None,
+                "wins": wins, "losses": closed - wins,
+                "best_trade": round(best, 2), "worst_trade": round(worst, 2),
+                "avg_hold": human_duration(avg_hold) if closed else "—",
+            }
+            # Signal-direction accuracy over the watchlist (all graded signals).
+            acc_stats = db.accuracy_stats(s)
 
         # Live figures from the paper account.
         acc = self._reader.get_account()
@@ -268,11 +284,34 @@ class SessionManager:
                 "sharpe_per_cycle": round(sharpe, 3),
                 "peak_equity": round(peak, 2),
             },
-            "trades": {"count": buys + sells, "buys": buys, "sells": sells},
+            "trades": {"count": buys + sells, "buys": buys, "sells": sells, **trade_stats},
+            "accuracy": acc_stats,
             "positions": positions,
             "equity_curve": snapshots,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
+
+    def leaderboard(self, limit: int = 10) -> list:
+        """Rank finished sessions by return %, best first (investor comparison)."""
+        out = []
+        with db.session_scope() as s:
+            rows = (s.query(PaperSession)
+                    .filter(PaperSession.status.in_(["completed", "stopped"]))
+                    .all())
+            for row in rows:
+                start = row.starting_capital or 1.0
+                final = row.final_equity or row.starting_capital
+                out.append({
+                    "session_id": row.id,
+                    "label": row.label or f"session #{row.id}",
+                    "created_by": row.created_by,
+                    "starting_capital": round(row.starting_capital, 2),
+                    "final_equity": round(final, 2),
+                    "return_pct": round((final - row.starting_capital) / start * 100.0, 3),
+                    "status": row.status,
+                })
+        out.sort(key=lambda x: x["return_pct"], reverse=True)
+        return out[:limit]
 
 
 sessions = SessionManager()

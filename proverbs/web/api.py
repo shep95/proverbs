@@ -102,6 +102,20 @@ def create_app() -> Flask:
             return jsonify([])
         return jsonify([p.to_dict() for p in trading.broker.get_positions()])
 
+    @app.route("/api/accuracy")
+    def api_accuracy():
+        symbol = request.args.get("symbol")
+        return jsonify(engine.accuracy_stats(symbol))
+
+    @app.route("/api/leaderboard")
+    def api_leaderboard():
+        from proverbs.trading.session import sessions
+        return jsonify(sessions.leaderboard(20))
+
+    @app.route("/api/watchlist")
+    def api_watchlist():
+        return jsonify(engine.watchlist())
+
     @app.route("/api/cycle", methods=["POST"])
     def api_cycle():
         """Trigger an analysis cycle on demand (useful for testing/demo)."""
