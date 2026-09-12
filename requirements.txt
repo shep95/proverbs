@@ -25,6 +25,13 @@ vaderSentiment==3.3.2
 # --- Production WSGI server for the dashboard (pure-python; runs in a thread) ---
 waitress==3.0.0
 
+# --- Trading (Robinhood, equities) ---
+# robin_stocks is an UNOFFICIAL, reverse-engineered Robinhood client. It is only
+# imported when BROKER=robinhood; the paper broker needs nothing extra.
+robin_stocks==3.1.0
+pyotp==2.9.0          # generate TOTP 2FA codes for headless Robinhood login
+tzdata==2024.1        # timezone data for the US-market-hours guard
+
 # --- Optional heavy backends (NOT installed by default; see README) ---
 # Uncomment to enable the Hugging Face sentiment backend (CULTURAL_BACKEND=transformers).
 # This pulls in torch (~2GB) and may exceed Railway build limits / slow cold starts.

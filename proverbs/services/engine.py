@@ -34,6 +34,8 @@ from proverbs.config import settings
 from proverbs.feeds.market_feed import latest_snapshot
 from proverbs.persistence import db
 from proverbs.persistence.models import Account
+from proverbs.trading.base import OrderResult
+from proverbs.trading.manager import trading
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,7 @@ class CycleReport:
     balance_before: float = 0.0
     balance_after: float = 0.0
     withdrawals: List[WithdrawalEvent] = field(default_factory=list)
+    orders: List[OrderResult] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
 
@@ -83,6 +86,14 @@ class Engine:
                     scores.append(decision.combined_score)
                     with db.session_scope() as s:
                         db.save_signal(s, decision)
+                    # Route the decision to the broker (dry-run/paper by default).
+                    if settings.auto_trade:
+                        try:
+                            order = trading.execute_decision(decision)
+                            if order is not None:
+                                report.orders.append(order)
+                        except Exception:
+                            logger.exception("Engine: order execution failed for %s", symbol)
                 except Exception as exc:  # never let one bad ticker kill the cycle
                     logger.exception("Engine: cycle failed for %s", symbol)
                     report.errors.append(f"{symbol}: {exc}")

@@ -78,6 +78,18 @@ def create_app() -> Flask:
         res = engine.set_risk(DASHBOARD_ACCOUNT, level, "Global")
         return jsonify(res), (200 if res["status"] == "success" else 400)
 
+    @app.route("/api/trading")
+    def api_trading():
+        from proverbs.trading.manager import trading
+        return jsonify(trading.status())
+
+    @app.route("/api/positions")
+    def api_positions():
+        from proverbs.trading.manager import trading
+        if trading.broker is None:
+            return jsonify([])
+        return jsonify([p.to_dict() for p in trading.broker.get_positions()])
+
     @app.route("/api/cycle", methods=["POST"])
     def api_cycle():
         """Trigger an analysis cycle on demand (useful for testing/demo)."""

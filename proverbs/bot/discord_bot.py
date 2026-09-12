@@ -20,6 +20,7 @@ from discord.ext import commands, tasks
 from proverbs.brains.orchestrator import Decision
 from proverbs.config import settings
 from proverbs.services.engine import CycleReport, engine
+from proverbs.trading.manager import trading
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def _account_embed(title: str, data: dict) -> discord.Embed:
 def cycle_alert_embed(report: CycleReport) -> Optional[discord.Embed]:
     """Build an alert embed for notable events; None if nothing worth pinging."""
     notable = [d for d in report.decisions if d.action in ("BUY", "REDUCE")]
-    if not notable and not report.withdrawals:
+    if not notable and not report.withdrawals and not report.orders:
         return None
     embed = discord.Embed(
         title="📣 proverbs — market alert",
@@ -91,6 +92,12 @@ def cycle_alert_embed(report: CycleReport) -> Optional[discord.Embed]:
         embed.add_field(name="💸 Auto-withdrawal",
                         value=f"${w.amount:,.2f} secured · new balance ${w.balance_after:,.2f}",
                         inline=False)
+    acted = [o for o in report.orders if o.status in ("submitted", "dry_run")]
+    if acted:
+        tag = "DRY-RUN" if not trading.state.live else "LIVE"
+        lines = [f"{o.side.upper()} ${o.notional:,.2f} {o.symbol} ({o.status})" for o in acted[:8]]
+        embed.add_field(name=f"⚙️ Orders [{trading.broker.name if trading.broker else '?'} · {tag}]",
+                        value="\n".join(lines), inline=False)
     return embed
 
 
@@ -265,6 +272,93 @@ def _register_commands(bot: commands.Bot) -> None:
         await interaction.response.send_message(
             "👀 Watchlist: " + ", ".join(f"`{s}`" for s in settings.watchlist))
 
+    # ---------------------------------------------------------- trading cmds
+    @tree.command(name="trading", description="Show broker status, mode, and risk limits.")
+    async def trading_status(interaction: discord.Interaction):
+        status = await asyncio.to_thread(trading.status)
+        mode = status["mode"]
+        color = discord.Color.red() if mode == "LIVE" else discord.Color.greyple()
+        embed = discord.Embed(title=f"⚙️ Trading — {status['broker']} · {mode}", color=color)
+        embed.add_field(name="Trading enabled", value="✅" if status["trading_enabled"] else "🛑 halted", inline=True)
+        embed.add_field(name="Mode", value=mode + (" 💵" if mode == "LIVE" else " (safe)"), inline=True)
+        acc = status.get("account")
+        if acc:
+            embed.add_field(name="Equity", value=f"${acc['equity']:,.2f}", inline=True)
+            embed.add_field(name="Cash", value=f"${acc['cash']:,.2f}", inline=True)
+            embed.add_field(name="Buying power", value=f"${acc['buying_power']:,.2f}", inline=True)
+        lim = status["limits"]
+        embed.add_field(
+            name="Limits",
+            value=(f"order ${lim['base_order_notional']:.0f}–${lim['max_order_notional']:.0f} · "
+                   f"max/pos ${lim['max_position_notional']:.0f} · "
+                   f"min conf {lim['order_confidence_min']:.2f} · "
+                   f"daily loss ${lim['daily_loss_limit']:.0f}"),
+            inline=False)
+        embed.set_footer(text="Change with /kill, /resume, /mode. Set LIVE only when you mean it.")
+        await interaction.response.send_message(embed=embed)
+
+    @tree.command(name="positions", description="Show current broker positions.")
+    async def positions(interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        if trading.broker is None:
+            await interaction.followup.send("No broker connected.")
+            return
+        pos = await asyncio.to_thread(trading.broker.get_positions)
+        if not pos:
+            await interaction.followup.send("No open positions.")
+            return
+        embed = discord.Embed(title=f"📊 Positions ({trading.broker.name})", color=discord.Color.blurple())
+        for p in pos[:20]:
+            embed.add_field(
+                name=f"{p.symbol} — {p.quantity:.4f}",
+                value=f"avg ${p.avg_cost:,.2f} · now ${p.current_price:,.2f} · "
+                      f"value ${p.market_value:,.2f} · P/L ${p.unrealized_pl:,.2f}",
+                inline=False)
+        await interaction.followup.send(embed=embed)
+
+    @tree.command(name="order", description="Place a manual order (respects dry-run + risk limits).")
+    @app_commands.describe(side="buy or sell", symbol="Ticker, e.g. AAPL", notional="USD amount")
+    @app_commands.choices(side=[
+        app_commands.Choice(name="buy", value="buy"),
+        app_commands.Choice(name="sell", value="sell"),
+    ])
+    async def order(interaction: discord.Interaction, side: app_commands.Choice[str],
+                    symbol: str, notional: float):
+        await interaction.response.defer(thinking=True)
+        result = await asyncio.to_thread(trading.manual_order, symbol, side.value, notional)
+        emoji = {"submitted": "✅", "dry_run": "🧪", "rejected": "⛔", "error": "⚠️"}.get(result.status, "•")
+        await interaction.followup.send(
+            f"{emoji} **{result.status.upper()}** — {side.value} ${result.notional:,.2f} "
+            f"{result.symbol}" + (f" @ ${result.price:,.2f}" if result.price else "") +
+            f"\n{result.message}")
+
+    @tree.command(name="kill", description="Halt all trading immediately (kill switch).")
+    async def kill(interaction: discord.Interaction):
+        trading.halt()
+        await interaction.response.send_message("🛑 Trading **halted**. No orders will be placed until `/resume`.")
+
+    @tree.command(name="resume", description="Resume trading after a halt.")
+    async def resume(interaction: discord.Interaction):
+        trading.resume()
+        await interaction.response.send_message("✅ Trading **resumed**.")
+
+    @tree.command(name="mode", description="Switch between dry-run and LIVE trading.")
+    @app_commands.describe(mode="dry-run (safe) or live (real orders)")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="dry-run", value="dry"),
+        app_commands.Choice(name="live", value="live"),
+    ])
+    async def mode(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+        if mode.value == "live":
+            trading.set_live(True)
+            await interaction.response.send_message(
+                "💵 **LIVE mode enabled.** Real orders will now be placed on "
+                f"`{trading.broker.name if trading.broker else settings.broker}` within your risk limits. "
+                "Use `/kill` to stop instantly.", ephemeral=False)
+        else:
+            trading.set_live(False)
+            await interaction.response.send_message("🧪 **Dry-run mode.** Orders are logged but not sent.")
+
     @tree.command(name="help", description="What proverbs can do.")
     async def help_cmd(interaction: discord.Interaction):
         embed = discord.Embed(
@@ -276,7 +370,10 @@ def _register_commands(bot: commands.Bot) -> None:
         embed.add_field(name="Account",
                         value="`/balance` · `/deposit <amt>` · `/withdraw <amt>` · "
                               "`/risk <level>` · `/portfolio` · `/history`", inline=False)
-        embed.set_footer(text="Scheduled alerts post automatically to the configured channel.")
+        embed.add_field(name="Trading",
+                        value="`/trading` · `/positions` · `/order <buy|sell> <ticker> <amt>` · "
+                              "`/mode <dry-run|live>` · `/kill` · `/resume`", inline=False)
+        embed.set_footer(text="Trading defaults to DRY-RUN. Alerts post to the configured channel.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 

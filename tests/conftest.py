@@ -9,3 +9,5 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{_tmp.name}")
 os.environ.setdefault("DISCORD_TOKEN", "test-token")
 os.environ.setdefault("CULTURAL_BACKEND", "vader")
 os.environ.setdefault("NEWS_BACKEND", "rss")
+os.environ.setdefault("BROKER", "paper")
+os.environ.setdefault("IGNORE_MARKET_HOURS", "true")  # don't let tests depend on wall-clock/market hours

@@ -44,6 +44,14 @@ def main() -> None:
 
     db.init_db()
 
+    # Connect the broker (paper by default; Robinhood if configured). Safe to call
+    # even without credentials — it degrades to trading-disabled.
+    from proverbs.trading.manager import trading
+
+    trading.init()
+    logger.info("Broker=%s · mode=%s · auto_trade=%s",
+                settings.broker, "LIVE" if trading.state.live else "DRY-RUN", settings.auto_trade)
+
     if settings.enable_web:
         _start_web_thread()
 

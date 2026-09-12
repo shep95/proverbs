@@ -93,6 +93,32 @@ class Settings:
     # --- Logging ---
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
 
+    # --- Trading / broker ---
+    # Which broker executes trades: "paper" (default, safe) or "robinhood".
+    broker: str = field(default_factory=lambda: os.getenv("BROKER", "paper").lower())
+    # LIVE_TRADING=false means DRY-RUN: intended orders are logged, never sent.
+    live_trading: bool = field(default_factory=lambda: _env_bool("LIVE_TRADING", False))
+    # Master kill switch. When false, no orders are placed at all.
+    trading_enabled: bool = field(default_factory=lambda: _env_bool("TRADING_ENABLED", True))
+    # Auto-trade on the engine's signals each cycle (vs. manual /order only).
+    auto_trade: bool = field(default_factory=lambda: _env_bool("AUTO_TRADE", True))
+    # Skip the US-market-hours guard (e.g. for testing). Holidays are NOT tracked.
+    ignore_market_hours: bool = field(default_factory=lambda: _env_bool("IGNORE_MARKET_HOURS", False))
+
+    # Order sizing / risk limits (USD).
+    base_order_notional: float = field(default_factory=lambda: _env_float("BASE_ORDER_NOTIONAL", 100.0))
+    max_order_notional: float = field(default_factory=lambda: _env_float("MAX_ORDER_NOTIONAL", 500.0))
+    max_position_notional: float = field(default_factory=lambda: _env_float("MAX_POSITION_NOTIONAL", 2000.0))
+    max_open_positions: int = field(default_factory=lambda: int(_env_float("MAX_OPEN_POSITIONS", 10)))
+    daily_loss_limit: float = field(default_factory=lambda: _env_float("DAILY_LOSS_LIMIT", 0.0))  # 0 = off
+    order_confidence_min: float = field(default_factory=lambda: _env_float("ORDER_CONFIDENCE_MIN", 0.15))
+    paper_starting_cash: float = field(default_factory=lambda: _env_float("PAPER_STARTING_CASH", 10000.0))
+
+    # Robinhood credentials (only needed when BROKER=robinhood). Never hardcode.
+    robinhood_username: str = field(default_factory=lambda: os.getenv("ROBINHOOD_USERNAME", ""))
+    robinhood_password: str = field(default_factory=lambda: os.getenv("ROBINHOOD_PASSWORD", ""))
+    robinhood_mfa_secret: str = field(default_factory=lambda: os.getenv("ROBINHOOD_MFA_SECRET", ""))
+
     @property
     def normalised_weights(self) -> tuple[float, float]:
         """Return (fiscal, cultural) weights re-normalised to sum to 1.0."""
@@ -114,6 +140,15 @@ class Settings:
             problems.append("NEWS_BACKEND=newsapi but NEWSAPI_KEY is empty.")
         if not self.watchlist:
             problems.append("WATCHLIST is empty.")
+        if self.broker not in {"paper", "robinhood"}:
+            problems.append(f"BROKER '{self.broker}' is invalid (use paper|robinhood).")
+        if self.broker == "robinhood" and self.live_trading:
+            if not (self.robinhood_username and self.robinhood_password):
+                problems.append("BROKER=robinhood with LIVE_TRADING=true requires "
+                                "ROBINHOOD_USERNAME and ROBINHOOD_PASSWORD.")
+            if not self.robinhood_mfa_secret:
+                problems.append("ROBINHOOD_MFA_SECRET not set — headless login needs a TOTP secret "
+                                "(enable app-based 2FA in Robinhood and store the shared secret).")
         return problems
 
 

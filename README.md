@@ -7,9 +7,11 @@ risk/reward of each ticker, and an *orchestrator* fuses the two into a
 **BUY / HOLD / REDUCE** call. It posts scheduled alerts to a Discord channel and
 answers slash commands, and it ships a live web dashboard as a secondary view.
 
-> ⚠️ **Paper-trading simulation — not financial advice.** `proverbs` never places
-> real brokerage orders. Balances, growth, and auto-withdrawals are simulated for
-> education and experimentation.
+> ⚠️ **Not financial advice.** `proverbs` ships **safe by default** — it paper-trades
+> and runs in dry-run, placing **no real orders** until you explicitly set
+> `BROKER=robinhood` and `LIVE_TRADING=true`. Live trading uses the *unofficial*
+> `robin_stocks` client (against Robinhood's ToS) and risks **real losses** — see
+> [Real trading](#real-trading-robinhood-equities). Use at your own risk.
 
 ---
 
@@ -72,8 +74,71 @@ answers slash commands, and it ships a live web dashboard as a secondary view.
 | `/watchlist` | Tickers being tracked |
 | `/help` · `/ping` | Help / liveness |
 
-Scheduled alerts (notable BUY/REDUCE calls + auto-withdrawals) post automatically
-to `DISCORD_ALERT_CHANNEL_ID` every `CYCLE_INTERVAL_MINUTES`.
+Scheduled alerts (notable BUY/REDUCE calls + auto-withdrawals + orders) post
+automatically to `DISCORD_ALERT_CHANNEL_ID` every `CYCLE_INTERVAL_MINUTES`.
+
+### Trading commands
+| Command | What it does |
+| --- | --- |
+| `/trading` | Broker status, mode (LIVE/DRY-RUN), account, and risk limits |
+| `/positions` | Current broker positions with P/L |
+| `/order <buy\|sell> <ticker> <amount>` | Place a manual order (respects all safeguards) |
+| `/mode <dry-run\|live>` | Switch between dry-run and LIVE trading |
+| `/kill` · `/resume` | Halt / resume all trading instantly (runtime kill switch) |
+
+---
+
+## Real trading (Robinhood, equities)
+
+`proverbs` can route its BUY/HOLD/REDUCE decisions to a broker. **Everything is
+safe by default** — `BROKER=paper` and `LIVE_TRADING=false` (dry-run) — so no real
+money moves until you deliberately enable it.
+
+```
+decision → size order → risk checks → LIVE gate → broker
+  (BUY/REDUCE)   (confidence)  (limits, hours,   (dry-run logs;    (paper | robinhood)
+                                kill switch)      live sends)
+```
+
+### ⚠️ Read this before going live
+- Robinhood has **no official stock API**. This uses **`robin_stocks`**, an
+  *unofficial, reverse-engineered* client — it is **against Robinhood's ToS**, can
+  break without notice, and can get an account flagged. **Use at your own risk.**
+- Real orders mean **real losses**. `proverbs` is provided as-is, **not financial
+  advice**, with no warranty. Start in dry-run, then paper, then tiny live sizes.
+
+### What you need for the Robinhood system
+1. A **funded Robinhood account**.
+2. **App-based 2FA**: in Robinhood, enable Two-Factor → *Authenticator App*, and
+   copy the **setup/secret key** — headless login on Railway can't do SMS/tap 2FA,
+   so it generates TOTP codes from this secret (`ROBINHOOD_MFA_SECRET`).
+3. Set these Railway Variables (never commit them):
+   - `BROKER=robinhood`
+   - `ROBINHOOD_USERNAME`, `ROBINHOOD_PASSWORD`, `ROBINHOOD_MFA_SECRET`
+   - `LIVE_TRADING=false` at first (dry-run) — flip to `true` only when ready
+4. Tune the **risk limits** (all in `.env.example`): `BASE_ORDER_NOTIONAL`,
+   `MAX_ORDER_NOTIONAL`, `MAX_POSITION_NOTIONAL`, `MAX_OPEN_POSITIONS`,
+   `DAILY_LOSS_LIMIT`, `ORDER_CONFIDENCE_MIN`.
+
+### Built-in safeguards
+- **Dry-run by default** — intended orders are logged, never sent, until `LIVE_TRADING=true`.
+- **Kill switch** (`/kill`, `TRADING_ENABLED=false`) halts all orders instantly.
+- **Per-order & per-position caps**, **max open positions**, **min confidence**.
+- **Daily loss limit** trips the kill switch automatically.
+- **US market-hours guard** (holidays not tracked — set `IGNORE_MARKET_HOURS=true` to bypass).
+- Order sizing scales with signal confidence, capped by your limits.
+
+### Recommended rollout
+1. `BROKER=paper`, dry-run → watch the signals and intended orders in alerts.
+2. `BROKER=paper`, `LIVE_TRADING=true` → exercise the full order path on the
+   simulated account (`PAPER_STARTING_CASH`).
+3. `BROKER=robinhood`, dry-run → confirm login + prices + positions read correctly.
+4. `BROKER=robinhood`, `LIVE_TRADING=true`, **small** `MAX_ORDER_NOTIONAL` → go live.
+
+> **A note on brokers:** Robinhood's stock API is unofficial and risky. If you
+> ever want a supported path, **Alpaca** offers official API keys plus a true
+> paper-trading sandbox and slots into the same `Broker` interface
+> (`proverbs/trading/base.py`) — just add an adapter.
 
 ---
 
@@ -138,14 +203,18 @@ for the full annotated list. Highlights:
 | `DATABASE_URL` | `sqlite:///proverbs.db` | SQLAlchemy URL (Postgres on Railway) |
 | `CULTURAL_BACKEND` | `vader` | `vader` or `transformers` |
 | `NEWS_BACKEND` | `rss` | `rss` or `newsapi` (+ `NEWSAPI_KEY`) |
+| `BROKER` | `paper` | `paper` or `robinhood` |
+| `LIVE_TRADING` | `false` | `false` = dry-run (log only); `true` = send real orders |
+| `MAX_ORDER_NOTIONAL` | `500` | Hard cap per order (USD) |
 
 ---
 
 ## HTTP API (dashboard)
 
 `GET /healthz` · `GET /api/signal[?symbol=]` · `GET /api/balance` ·
-`GET /api/portfolio` · `GET /api/history` · `POST /api/deposit` ·
-`POST /api/withdraw` · `POST /api/risk` · `POST /api/cycle`
+`GET /api/portfolio` · `GET /api/history` · `GET /api/trading` ·
+`GET /api/positions` · `POST /api/deposit` · `POST /api/withdraw` ·
+`POST /api/risk` · `POST /api/cycle`
 
 ---
 
