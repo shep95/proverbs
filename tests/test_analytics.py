@@ -95,3 +95,34 @@ def test_leaderboard_ranks_sessions():
     assert len(board) >= 2
     # sorted by return desc
     assert board[0]["return_pct"] >= board[-1]["return_pct"]
+
+
+def test_user_leaderboard_aggregates_by_user():
+    sessions.start(1000.0, "1m", created_by="u1", label="A1"); sessions.stop()
+    sessions.start(1000.0, "1m", created_by="u1", label="A2"); sessions.stop()
+    sessions.start(1000.0, "1m", created_by="u2", label="B1"); sessions.stop()
+    board = sessions.user_leaderboard()
+    users = {row["user_id"]: row for row in board}
+    assert "u1" in users and users["u1"]["sessions"] == 2
+    assert "u2" in users and users["u2"]["sessions"] == 1
+    # sorted by avg return desc
+    assert board[0]["avg_return_pct"] >= board[-1]["avg_return_pct"]
+
+
+def test_per_symbol_accuracy_horizon(monkeypatch):
+    from proverbs.config import settings
+    # Global 24h, but TSLA overridden to 1h.
+    monkeypatch.setattr(settings, "accuracy_horizon_overrides", {"TSLA": 1.0})
+    assert settings.horizon_hours_for("TSLA") == 1.0
+    assert settings.horizon_hours_for("AAPL") == settings.accuracy_horizon_hours
+
+    from datetime import datetime, timedelta
+    with db.session_scope() as s:
+        sig = Signal(symbol="TSLA", combined_score=0.4, confidence=0.7, action="BUY",
+                     last_price=200.0, predicted_up=1, proba_up=0.7)
+        s.add(sig)
+        s.flush()
+        sig.timestamp = datetime.utcnow() - timedelta(hours=2)  # older than 1h, younger than 24h
+    # With the 1h override, a 2h-old TSLA signal is now gradeable.
+    graded = engine._grade_signals({"TSLA": 210.0})
+    assert graded == 1

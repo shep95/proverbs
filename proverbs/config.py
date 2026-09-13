@@ -49,6 +49,22 @@ def _env_list(key: str, default: List[str]) -> List[str]:
     return [item.strip().upper() for item in raw.split(",") if item.strip()]
 
 
+def _env_float_map(key: str) -> dict:
+    """Parse 'TSLA=6,AAPL=48' -> {'TSLA': 6.0, 'AAPL': 48.0}."""
+    raw = os.getenv(key)
+    out: dict = {}
+    if not raw:
+        return out
+    for part in raw.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            try:
+                out[k.strip().upper()] = float(v)
+            except ValueError:
+                continue
+    return out
+
+
 def _normalise_db_url(url: str) -> str:
     # Railway/Heroku hand out ``postgres://`` which SQLAlchemy no longer accepts.
     if url.startswith("postgres://"):
@@ -115,6 +131,11 @@ class Settings:
     paper_starting_cash: float = field(default_factory=lambda: _env_float("PAPER_STARTING_CASH", 10000.0))
     # A signal is graded once a price at least this many hours later is available.
     accuracy_horizon_hours: float = field(default_factory=lambda: _env_float("ACCURACY_HORIZON_HOURS", 24.0))
+    # Optional per-symbol overrides, e.g. ACCURACY_HORIZON_OVERRIDES="TSLA=6,AAPL=48".
+    accuracy_horizon_overrides: dict = field(default_factory=lambda: _env_float_map("ACCURACY_HORIZON_OVERRIDES"))
+
+    def horizon_hours_for(self, symbol: str) -> float:
+        return self.accuracy_horizon_overrides.get(symbol.upper(), self.accuracy_horizon_hours)
 
     # Robinhood credentials (only needed when BROKER=robinhood). Never hardcode.
     robinhood_username: str = field(default_factory=lambda: os.getenv("ROBINHOOD_USERNAME", ""))

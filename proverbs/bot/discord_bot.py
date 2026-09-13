@@ -711,15 +711,39 @@ def _register_commands(bot: commands.Bot) -> None:
         file = discord.File(io.BytesIO(data), filename=fname)
         await interaction.followup.send(embed=embed, file=file)
 
-    @papertrade.command(name="leaderboard", description="Rank finished sessions by return %.")
-    async def pt_leaderboard(interaction: discord.Interaction):
+    @papertrade.command(name="leaderboard", description="Rank finished sessions, or users, by return %.")
+    @app_commands.describe(by="Rank individual sessions (default) or users across all their sessions")
+    @app_commands.choices(by=[
+        app_commands.Choice(name="session", value="session"),
+        app_commands.Choice(name="user", value="user"),
+    ])
+    async def pt_leaderboard(interaction: discord.Interaction,
+                             by: Optional[app_commands.Choice[str]] = None):
         await interaction.response.defer(thinking=True)
+        mode = by.value if by else "session"
+        medals = ["🥇", "🥈", "🥉"]
+        if mode == "user":
+            rows = await asyncio.to_thread(sessions.user_leaderboard, 10)
+            if not rows:
+                await interaction.followup.send("No finished sessions yet. Run one with `/papertrade start`.")
+                return
+            embed = discord.Embed(title="🏆 Paper-trading leaderboard — by user",
+                                  color=discord.Color.gold())
+            for i, r in enumerate(rows):
+                rank = medals[i] if i < 3 else f"{i+1}."
+                up = r["avg_return_pct"] >= 0
+                embed.add_field(
+                    name=f"{rank} <@{r['user_id']}> — avg {'+' if up else ''}{r['avg_return_pct']:.2f}%",
+                    value=f"best {r['best_return_pct']:+.2f}% · {r['sessions']} session(s)",
+                    inline=False)
+            await interaction.followup.send(embed=embed)
+            return
         rows = await asyncio.to_thread(sessions.leaderboard, 10)
         if not rows:
             await interaction.followup.send("No finished sessions yet. Run one with `/papertrade start`.")
             return
-        embed = discord.Embed(title="🏆 Paper-trading leaderboard", color=discord.Color.gold())
-        medals = ["🥇", "🥈", "🥉"]
+        embed = discord.Embed(title="🏆 Paper-trading leaderboard — by session",
+                              color=discord.Color.gold())
         for i, r in enumerate(rows):
             rank = medals[i] if i < 3 else f"{i+1}."
             up = r["return_pct"] >= 0

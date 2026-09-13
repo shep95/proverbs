@@ -313,5 +313,29 @@ class SessionManager:
         out.sort(key=lambda x: x["return_pct"], reverse=True)
         return out[:limit]
 
+    def user_leaderboard(self, limit: int = 10) -> list:
+        """Rank *users* across all their finished sessions (avg + best return)."""
+        from collections import defaultdict
+
+        by_user = defaultdict(list)
+        with db.session_scope() as s:
+            rows = (s.query(PaperSession)
+                    .filter(PaperSession.status.in_(["completed", "stopped"]))
+                    .all())
+            for row in rows:
+                start = row.starting_capital or 1.0
+                final = row.final_equity or row.starting_capital
+                by_user[row.created_by or "unknown"].append((final - row.starting_capital) / start * 100.0)
+        out = []
+        for user, rets in by_user.items():
+            out.append({
+                "user_id": user,
+                "sessions": len(rets),
+                "avg_return_pct": round(sum(rets) / len(rets), 3),
+                "best_return_pct": round(max(rets), 3),
+            })
+        out.sort(key=lambda x: x["avg_return_pct"], reverse=True)
+        return out[:limit]
+
 
 sessions = SessionManager()

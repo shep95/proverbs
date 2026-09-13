@@ -157,14 +157,15 @@ class Engine:
         """Grade ungraded signals older than the horizon against the fresh price."""
         if not prices:
             return 0
-        horizon = settings.accuracy_horizon_hours * 3600
-        cutoff_dt = datetime.utcfromtimestamp(time.time() - horizon)
         now = time.time()
         graded = 0
         with db.session_scope() as s:
             for symbol, price in prices.items():
                 if price <= 0:
                     continue
+                # Per-symbol horizon override, else the global default.
+                horizon = settings.horizon_hours_for(symbol) * 3600
+                cutoff_dt = datetime.utcfromtimestamp(now - horizon)
                 for sig in db.ungraded_signals(s, symbol, cutoff_dt):
                     actual_up = price > sig.last_price
                     predicted_up = sig.predicted_up == 1

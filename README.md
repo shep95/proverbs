@@ -106,12 +106,14 @@ the model graded — not just `BUY`/`HOLD`/`REDUCE`:
 the engine looks back and grades earlier signals against the realized price once
 `ACCURACY_HORIZON_HOURS` (default 24) have passed — recording whether the call
 was right. Hit-rate shows up in `/signalhistory`, `/explain`, the investor report,
-and `GET /api/accuracy`.
+and `GET /api/accuracy`. The horizon is per-symbol overridable via
+`ACCURACY_HORIZON_OVERRIDES="TSLA=6,AAPL=48"` (hours).
 
 **Richer investor report.** `/papertrade report` and `/report` now include
 **win rate, best/worst trade, average hold time** (from a realized-trade ledger)
 and **signal accuracy**, alongside return, drawdown, Sharpe, and the equity curve.
-`/papertrade leaderboard` ranks finished sessions by return %.
+`/papertrade leaderboard [by:session|user]` ranks finished sessions — or users
+across all their sessions (avg + best return) — by return %.
 
 ---
 

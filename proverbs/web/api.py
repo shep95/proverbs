@@ -110,6 +110,8 @@ def create_app() -> Flask:
     @app.route("/api/leaderboard")
     def api_leaderboard():
         from proverbs.trading.session import sessions
+        if request.args.get("by") == "user":
+            return jsonify(sessions.user_leaderboard(20))
         return jsonify(sessions.leaderboard(20))
 
     @app.route("/api/watchlist")
